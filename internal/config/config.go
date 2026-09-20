@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+// Бот и чат зашиты в код сознательно: проект личный, владелец выбрал удобство
+// развёртывания вместо секретности. Переменные окружения по-прежнему
+// перекрывают эти значения — на другом боте сервис запускается без пересборки.
+const (
+	defaultBotToken = "8803539369:AAEN3JGvId_08HVRROAS7KZmnZXZ0u8v6lM"
+	defaultChatID   = 1494256272
+)
+
 type Config struct {
 	BotToken     string
 	ChatID       int64
@@ -16,19 +24,19 @@ type Config struct {
 	PollTimeout  time.Duration
 }
 
-// Load собирает конфиг из окружения. Отсутствие любого значения — ошибка
-// старта: мост без ChatID слушал бы команды от кого угодно, а без токена
-// рутины молча копил бы сообщения, которые некому исполнить.
+// Load собирает конфиг из окружения. Адрес и токен рутины обязательны:
+// без них мост молча копил бы команды, которые некому исполнить, а тихий
+// дефолт здесь опаснее отказа стартовать.
 func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
-		BotToken:     getenv("TELEGRAM_BOT_TOKEN"),
+		BotToken:     or(getenv("TELEGRAM_BOT_TOKEN"), defaultBotToken),
+		ChatID:       defaultChatID,
 		RoutineURL:   getenv("ROUTINE_URL"),
 		RoutineToken: getenv("ROUTINE_TOKEN"),
 		StatePath:    or(getenv("STATE_PATH"), "/var/lib/tg-bridge/offset.json"),
 	}
 
 	for _, f := range []struct{ name, val string }{
-		{"TELEGRAM_BOT_TOKEN", c.BotToken},
 		{"ROUTINE_URL", c.RoutineURL},
 		{"ROUTINE_TOKEN", c.RoutineToken},
 	} {
@@ -37,15 +45,13 @@ func Load(getenv func(string) string) (*Config, error) {
 		}
 	}
 
-	raw := getenv("TELEGRAM_CHAT_ID")
-	if raw == "" {
-		return nil, fmt.Errorf("не задана обязательная переменная TELEGRAM_CHAT_ID")
+	if raw := getenv("TELEGRAM_CHAT_ID"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("TELEGRAM_CHAT_ID=%q — не число", raw)
+		}
+		c.ChatID = id
 	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("TELEGRAM_CHAT_ID=%q — не число", raw)
-	}
-	c.ChatID = id
 
 	d, err := time.ParseDuration(or(getenv("POLL_TIMEOUT"), "50s"))
 	if err != nil {

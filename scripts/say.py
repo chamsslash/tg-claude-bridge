@@ -7,8 +7,9 @@
 Нужен, чтобы рутине не приходилось собирать JSON внутри shell-строки: кавычки
 и переводы строк в тексте ответа ломают такую сборку тихо и по-разному.
 
-Берёт TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID из окружения. Только стандартная
-библиотека — в окружении рутины ничего не устанавливается.
+Бот и чат зашиты ниже; TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID из окружения их
+перекрывают. Только стандартная библиотека — в окружении рутины ничего не
+устанавливается.
 """
 import json
 import os
@@ -18,6 +19,19 @@ import urllib.error
 import urllib.request
 
 LIMIT = 4096
+
+# Зашиты сознательно: проект личный, владелец выбрал удобство вместо
+# секретности. Окружение имеет приоритет.
+DEFAULT_BOT_TOKEN = "8803539369:AAEN3JGvId_08HVRROAS7KZmnZXZ0u8v6lM"
+DEFAULT_CHAT_ID = "1494256272"
+
+
+def bot_token():
+    return os.environ.get("TELEGRAM_BOT_TOKEN") or DEFAULT_BOT_TOKEN
+
+
+def chat_id():
+    return int(os.environ.get("TELEGRAM_CHAT_ID") or DEFAULT_CHAT_ID)
 
 
 def split_text(text, limit=LIMIT):
@@ -44,9 +58,8 @@ def split_text(text, limit=LIMIT):
 
 
 def send(text):
-    url = (f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}"
-           f"/sendMessage")
-    payload = json.dumps({"chat_id": int(os.environ["TELEGRAM_CHAT_ID"]),
+    url = f"https://api.telegram.org/bot{bot_token()}/sendMessage"
+    payload = json.dumps({"chat_id": chat_id(),
                           "text": text,
                           "disable_web_page_preview": True}).encode()
     req = urllib.request.Request(url, data=payload,
@@ -63,11 +76,6 @@ def send(text):
 
 
 def main():
-    missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
-               if not os.environ.get(k)]
-    if missing:
-        sys.exit(f"нет переменных окружения: {', '.join(missing)}")
-
     text = " ".join(sys.argv[1:]).strip() or sys.stdin.read().strip()
     if not text:
         sys.exit("нечего отправлять")
