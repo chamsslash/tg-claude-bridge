@@ -11,7 +11,7 @@ import (
 // развёртывания вместо секретности. Переменные окружения по-прежнему
 // перекрывают эти значения — на другом боте сервис запускается без пересборки.
 const (
-	defaultBotToken = "8803539369:AAEN3JGvId_08HVRROAS7KZmnZXZ0u8v6lM"
+	defaultBotToken = "8803539369:AAGGLXl5c7fuEt7K5mc4lvLErYmoXCsWq_8"
 	defaultChatID   = 1494256272
 )
 
