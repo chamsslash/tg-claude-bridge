@@ -1,0 +1,38 @@
+[Unit]
+Description=Мост Telegram -> облачная рутина Claude
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Секреты читает systemd, а не процесс: так токены не попадают ни в командную
+# строку, ни в список процессов.
+EnvironmentFile=/etc/tg-bridge.env
+ExecStart=/usr/local/bin/tg-bridge
+Environment=STATE_PATH=/var/lib/tg-bridge/offset.json
+
+Restart=always
+RestartSec=5
+# Длинный опрос рвётся при каждом обрыве связи, и перезапуск здесь — штатное
+# событие, а не повод уйти в failed.
+StartLimitIntervalSec=0
+
+# Каталог состояния systemd создаёт и чистит сам.
+StateDirectory=tg-bridge
+DynamicUser=true
+
+# Мосту нужна только исходящая сеть и свой каталог состояния.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
