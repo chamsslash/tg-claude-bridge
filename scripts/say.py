@@ -22,7 +22,7 @@ LIMIT = 4096
 
 # Зашиты сознательно: проект личный, владелец выбрал удобство вместо
 # секретности. Окружение имеет приоритет.
-DEFAULT_BOT_TOKEN = "8803539369:AAGGLXl5c7fuEt7K5mc4lvLErYmoXCsWq_8"
+DEFAULT_BOT_TOKEN = "8803539369:AAFrIqdFIcK5Lmu3xyZicSUHylFOH8hT6nE"
 DEFAULT_CHAT_ID = "1494256272"
 
 
