@@ -2,6 +2,10 @@
 Description=Мост Telegram -> облачная рутина Claude
 After=network-online.target
 Wants=network-online.target
+# Длинный опрос рвётся при каждом обрыве связи, и перезапуск здесь — штатное
+# событие, а не повод уйти в failed. Ключ живёт именно в [Unit]: в [Service]
+# systemd его молча игнорирует.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -13,9 +17,6 @@ Environment=STATE_PATH=/var/lib/tg-bridge/offset.json
 
 Restart=always
 RestartSec=5
-# Длинный опрос рвётся при каждом обрыве связи, и перезапуск здесь — штатное
-# событие, а не повод уйти в failed.
-StartLimitIntervalSec=0
 
 # Каталог состояния systemd создаёт и чистит сам.
 StateDirectory=tg-bridge
