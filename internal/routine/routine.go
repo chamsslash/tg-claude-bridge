@@ -14,6 +14,12 @@ import (
 const (
 	attempts       = 3
 	defaultBackoff = 5 * time.Second
+
+	// Версия API и флаг беты обязательны: без них эндпоинт отвечает 400
+	// ещё до проверки токена. Значения взяты из примера запроса в форме
+	// API-триггера.
+	apiVersion = "2023-06-01"
+	apiBeta    = "experimental-cc-routine-2026-04-01"
 )
 
 type Client struct {
@@ -74,6 +80,8 @@ func (c *Client) post(ctx context.Context, body []byte) (retryable bool, err err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("anthropic-version", apiVersion)
+	req.Header.Set("anthropic-beta", apiBeta)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

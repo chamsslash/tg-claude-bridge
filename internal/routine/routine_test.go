@@ -13,11 +13,13 @@ import (
 )
 
 func TestWakePassesTextAndToken(t *testing.T) {
-	var gotText, gotAuth, gotType string
+	var gotText, gotAuth, gotType, gotVersion, gotBeta string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotType = r.Header.Get("Content-Type")
+		gotVersion = r.Header.Get("anthropic-version")
+		gotBeta = r.Header.Get("anthropic-beta")
 		body, _ := io.ReadAll(r.Body)
 		var v map[string]string
 		json.Unmarshal(body, &v)
@@ -36,6 +38,13 @@ func TestWakePassesTextAndToken(t *testing.T) {
 	}
 	if gotType != "application/json" {
 		t.Errorf("не тот Content-Type: %q", gotType)
+	}
+	// Без этой пары эндпоинт отвечает 400 ещё до проверки токена.
+	if gotVersion != apiVersion {
+		t.Errorf("не уехал anthropic-version: %q", gotVersion)
+	}
+	if gotBeta != apiBeta {
+		t.Errorf("не уехал anthropic-beta: %q", gotBeta)
 	}
 }
 
