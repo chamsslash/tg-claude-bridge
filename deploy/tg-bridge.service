@@ -9,18 +9,23 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# Сервис живёт в каталоге проектов на примонтированном диске: корневой раздел
+# маленький, и все остальные проекты машины лежат там же.
+WorkingDirectory=/mnt/data/projects/tg-claude-bridge
+ExecStart=/mnt/data/projects/tg-claude-bridge/bin/tg-bridge
+Environment=STATE_PATH=/mnt/data/projects/tg-claude-bridge/state/offset.json
 # Секреты читает systemd, а не процесс: так токены не попадают ни в командную
 # строку, ни в список процессов.
-EnvironmentFile=/etc/tg-bridge.env
-ExecStart=/usr/local/bin/tg-bridge
-Environment=STATE_PATH=/var/lib/tg-bridge/offset.json
+EnvironmentFile=/mnt/data/projects/tg-claude-bridge/.env
+
+# Фиксированный пользователь вместо DynamicUser: состояние лежит рядом с
+# проектом, а не в /var/lib, и владелец у файлов должен быть постоянным —
+# динамический uid меняется от запуска к запуску и терял бы к ним доступ.
+User=gyattalert
+Group=gyattalert
 
 Restart=always
 RestartSec=5
-
-# Каталог состояния systemd создаёт и чистит сам.
-StateDirectory=tg-bridge
-DynamicUser=true
 
 # Мосту нужна только исходящая сеть и свой каталог состояния.
 NoNewPrivileges=true
@@ -28,6 +33,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ReadWritePaths=/mnt/data/projects/tg-claude-bridge/state
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6

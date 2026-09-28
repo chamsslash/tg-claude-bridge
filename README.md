@@ -76,20 +76,42 @@ API-триггером — см. «Рутина» ниже.
 
 ## Развёртывание
 
-```bash
-go build -o /usr/local/bin/tg-bridge ./cmd/tg-bridge
+Сервис живёт целиком в одном каталоге на примонтированном диске — рядом с
+остальными проектами машины, а не вразнос по `/usr/local/bin` и `/etc`:
 
-sudo tee /etc/tg-bridge.env >/dev/null <<'EOF'
+```
+/mnt/data/projects/tg-claude-bridge/
+  bin/tg-bridge          собранный бинарник
+  state/offset.json      offset очереди обновлений
+  .env                   ROUTINE_URL и ROUTINE_TOKEN, права 600
+```
+
+```bash
+git clone https://github.com/chamsslash/tg-claude-bridge.git \
+  /mnt/data/projects/tg-claude-bridge
+cd /mnt/data/projects/tg-claude-bridge
+mkdir -p bin state
+
+# Go на сервере может и не быть — тогда собирай у себя и копируй:
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+#     -ldflags="-s -w" -o /tmp/tg-bridge ./cmd/tg-bridge
+#   scp /tmp/tg-bridge сервер:/mnt/data/projects/tg-claude-bridge/bin/
+go build -o bin/tg-bridge ./cmd/tg-bridge
+
+cat > .env <<'EOF'
 ROUTINE_URL=...
 ROUTINE_TOKEN=...
 EOF
-sudo chmod 600 /etc/tg-bridge.env
+chmod 600 .env
 
 sudo cp deploy/tg-bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now tg-bridge
 journalctl -u tg-bridge -f
 ```
+
+Юнит-файл остаётся в `/etc/systemd/system/` — systemd читает юниты только
+оттуда, и это единственное, что лежит вне каталога проекта.
 
 Токен рутины читает systemd из `EnvironmentFile`, а не сам процесс: так он не
 попадает ни в командную строку, ни в список процессов. В репозитории его нет
