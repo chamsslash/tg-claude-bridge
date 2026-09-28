@@ -7,13 +7,13 @@ import (
 	"time"
 )
 
-// Бот и чат зашиты в код сознательно: проект личный, владелец выбрал удобство
-// развёртывания вместо секретности. Переменные окружения по-прежнему
-// перекрывают эти значения — на другом боте сервис запускается без пересборки.
-const (
-	defaultBotToken = "8803539369:AAFrIqdFIcK5Lmu3xyZicSUHylFOH8hT6nE"
-	defaultChatID   = 1494256272
-)
+// Чат зашит в код: это не секрет, а просто адрес получателя.
+//
+// Токен бота раньше лежал здесь же — и трижды умирал в течение суток после
+// пуша: репозиторий публичный, а живой токен из публичной репы забирает кто
+// угодно и начинает сам читать очередь бота. Наш опрос получал в ответ
+// 409 Conflict. Теперь токен приходит только из окружения.
+const defaultChatID = 1494256272
 
 type Config struct {
 	BotToken     string
@@ -24,12 +24,12 @@ type Config struct {
 	PollTimeout  time.Duration
 }
 
-// Load собирает конфиг из окружения. Адрес и токен рутины обязательны:
-// без них мост молча копил бы команды, которые некому исполнить, а тихий
-// дефолт здесь опаснее отказа стартовать.
+// Load собирает конфиг из окружения. Токен бота, адрес и токен рутины
+// обязательны: без них мост молча копил бы команды, которые некому исполнить,
+// а тихий дефолт здесь опаснее отказа стартовать.
 func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
-		BotToken:     or(getenv("TELEGRAM_BOT_TOKEN"), defaultBotToken),
+		BotToken:     getenv("TELEGRAM_BOT_TOKEN"),
 		ChatID:       defaultChatID,
 		RoutineURL:   getenv("ROUTINE_URL"),
 		RoutineToken: getenv("ROUTINE_TOKEN"),
@@ -37,6 +37,7 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 
 	for _, f := range []struct{ name, val string }{
+		{"TELEGRAM_BOT_TOKEN", c.BotToken},
 		{"ROUTINE_URL", c.RoutineURL},
 		{"ROUTINE_TOKEN", c.RoutineToken},
 	} {
