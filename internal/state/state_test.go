@@ -4,64 +4,69 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-func TestLoadMissingFileStartsFromZero(t *testing.T) {
-	s := New(filepath.Join(t.TempDir(), "нет-такого", "offset.json"))
-	got, err := s.Load()
+func TestOpenMissingFile(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
-		t.Fatalf("отсутствие файла — не ошибка, а первый запуск: %v", err)
+		t.Fatal(err)
 	}
-	if got != 0 {
-		t.Errorf("ожидал 0, получил %d", got)
+	got := s.Get()
+	if got.TelegramOffset != 0 || !got.Gmail.Since.IsZero() {
+		t.Fatalf("первый запуск должен начинаться с пустого состояния, получено %+v", got)
+	}
+	if got.Gmail.Seen == nil || got.Calendar.Actions == nil || got.Meal.Entries == nil {
+		t.Fatal("карты не должны быть nil: иначе первая же запись в них паникует")
 	}
 }
 
-func TestSaveThenLoadRoundTrip(t *testing.T) {
-	// Каталог намеренно ещё не создан: служба должна поднимать его сама.
-	s := New(filepath.Join(t.TempDir(), "var", "offset.json"))
-	if err := s.Save(4242); err != nil {
-		t.Fatalf("не сохранил: %v", err)
-	}
-	got, err := s.Load()
+func TestUpdatePersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "state.json")
+	s, err := Open(path)
 	if err != nil {
-		t.Fatalf("не прочитал: %v", err)
+		t.Fatal(err)
 	}
-	if got != 4242 {
-		t.Errorf("ожидал 4242, получил %d", got)
+	at := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	if err := s.Update(func(st *State) {
+		st.TelegramOffset = 7
+		st.Meal.Entries["a"] = MealEntry{ID: "x", At: at}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := again.Get()
+	if got.TelegramOffset != 7 || !got.Meal.Entries["a"].At.Equal(at) {
+		t.Fatalf("состояние не пережило перезапуск: %+v", got)
 	}
 }
 
-func TestLoadBrokenFileDoesNotWedge(t *testing.T) {
-	// Побитый файл не должен мешать старту: потеряем позицию, но не встанем.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "offset.json")
-	os.WriteFile(path, []byte("{обрублено"), 0o644)
-
-	got, err := New(path).Load()
-	if err != nil {
-		t.Fatalf("побитый файл не должен ронять старт: %v", err)
+func TestOpenCorruptFileStartsFresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("{oops"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got != 0 {
-		t.Errorf("ожидал 0, получил %d", got)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("побитый файл должен лечиться пустым состоянием, а не ронять старт: %v", err)
+	}
+	if s.Get().TelegramOffset != 0 {
+		t.Fatal("ожидал пустое состояние")
 	}
 }
 
-func TestSaveLeavesNoTempFiles(t *testing.T) {
-	dir := t.TempDir()
-	s := New(filepath.Join(dir, "offset.json"))
-	for i := range 5 {
-		if err := s.Save(i); err != nil {
-			t.Fatal(err)
-		}
+func TestGetIsCopy(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		t.Errorf("после записи должен остаться один файл, есть: %v", names)
+	g := s.Get()
+	g.Gmail.Seen["x"] = time.Now()
+	if _, ok := s.Get().Gmail.Seen["x"]; ok {
+		t.Fatal("Get обязан отдавать копию: правка снаружи не должна менять состояние мимо Update")
 	}
 }

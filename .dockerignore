@@ -1,0 +1,7 @@
+# Секреты в образ не попадают никогда: их отдаёт compose через env_file.
+.env
+claude.env
+.git
+/bin/
+/state/
+docs/

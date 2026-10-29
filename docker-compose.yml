@@ -1,0 +1,82 @@
+# Три контейнера и три сети:
+#
+#   bridge ──(llm)──▶ claude ──(egress)──▶ egress ──▶ api.anthropic.com
+#      │
+#      └──(default)──▶ Telegram, Google, Yazio
+#
+# llm и egress — внутренние сети без выхода наружу. У claude нет ни .env
+# моста, ни тома с состоянием; наружу он ходит только через egress, а тот
+# пускает только к Anthropic. Подробно —
+# docs/superpowers/specs/2026-10-29-claude-cli-design.md.
+services:
+  bridge:
+    build:
+      context: .
+      target: bridge
+    image: tg-bridge:local
+    env_file: .env
+    environment:
+      CLAUDE_URL: http://claude:8090
+    # В томе — состояние: offset бота, что из Gmail уже ушло в сводку, кнопки
+    # «Отменить». Без него каждый передеплой начинал бы с нуля.
+    volumes:
+      - bridge_data:/data
+    networks: [default, llm]
+    depends_on: [claude]
+    restart: unless-stopped
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  claude:
+    build:
+      context: .
+      target: claude
+    image: tg-bridge-claude:local
+    # Только токен Claude — секретов моста здесь нет.
+    env_file:
+      - path: claude.env
+        required: false
+    environment:
+      HTTPS_PROXY: http://egress:3128
+      HTTP_PROXY: http://egress:3128
+    networks: [llm, egress]
+    read_only: true
+    # Домашний каталог CLI и рабочие каталоги запусков — в памяти: ничего не
+    # переживает рестарт, и писать на диск образа нельзя.
+    tmpfs:
+      - /tmp:size=64m
+      - /home/node:uid=1000,gid=1000,mode=0700,size=64m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 256
+    depends_on: [egress]
+    restart: unless-stopped
+    logging: *logging
+
+  egress:
+    build:
+      context: .
+      target: egress
+    image: tg-bridge-egress:local
+    environment:
+      EGRESS_ALLOW: ${EGRESS_ALLOW:-api.anthropic.com:443,platform.claude.com:443}
+    networks: [egress, default]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  llm:
+    internal: true
+  egress:
+    internal: true
+
+volumes:
+  bridge_data:

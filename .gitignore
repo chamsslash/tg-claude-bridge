@@ -1,8 +1,15 @@
-# Собранный бинарник в корне. Слеш обязателен: без него шаблон ловит и
+# Собранные бинарники в корне. Слеш обязателен: без него шаблон ловит и
 # каталог cmd/tg-bridge вместе с исходниками.
 /tg-bridge
-/offset.json
+/claude-runner
+/egress
 *.tmp
+
+# Секреты: токен бота, Google, Yazio, Claude.
 .env
+claude.env
+
+# Остатки развёртывания через systemd.
 /bin/
 /state/
+/offset.json

@@ -5,8 +5,6 @@ import "testing"
 func full() map[string]string {
 	return map[string]string{
 		"TELEGRAM_BOT_TOKEN": "111:aaa",
-		"ROUTINE_URL":        "https://example.test/trigger",
-		"ROUTINE_TOKEN":      "secret",
 	}
 }
 
@@ -49,12 +47,52 @@ func TestEnvOverridesBuiltInChat(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresSecrets(t *testing.T) {
-	for _, missing := range []string{"TELEGRAM_BOT_TOKEN", "ROUTINE_URL", "ROUTINE_TOKEN"} {
+func TestLoadRequiresBotToken(t *testing.T) {
+	if _, err := Load(getenv(map[string]string{})); err == nil {
+		t.Error("без TELEGRAM_BOT_TOKEN ожидал отказ старта")
+	}
+}
+
+// Google, Yazio и Claude необязательны: без них соответствующее просто
+// выключено.
+func TestOptionalParts(t *testing.T) {
+	c, err := Load(getenv(full()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.GoogleEnabled() || c.YazioEnabled() || c.ClaudeURL != "" {
+		t.Fatalf("%+v", c)
+	}
+	if c.LLMPerHour != 40 || c.GmailPollInterval.Hours() != 1 || c.StatePath != "/data/state.json" {
+		t.Fatalf("дефолты %+v", c)
+	}
+
+	env := full()
+	env["CLAUDE_URL"] = "http://claude:8090"
+	env["GOOGLE_CLIENT_ID"], env["GOOGLE_CLIENT_SECRET"], env["GOOGLE_REFRESH_TOKEN"] = "id", "s", "r"
+	env["YAZIO_USERNAME"], env["YAZIO_PASSWORD"] = "u@x.ru", "pw"
+	if c, err = Load(getenv(env)); err != nil || !c.GoogleEnabled() || !c.YazioEnabled() {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+// Половина пары — опечатка в .env, о ней лучше узнать на старте.
+func TestHalfConfiguredRejected(t *testing.T) {
+	for _, set := range []map[string]string{
+		{"GOOGLE_CLIENT_ID": "id"},
+		{"GOOGLE_CLIENT_ID": "id", "GOOGLE_CLIENT_SECRET": "s"},
+		{"YAZIO_USERNAME": "u"},
+		{"YAZIO_PASSWORD": "p"},
+		{"CLAUDE_URL": "claude:8090"},
+		{"LLM_PER_HOUR": "0"},
+		{"GMAIL_POLL_INTERVAL": "1m"},
+	} {
 		env := full()
-		delete(env, missing)
+		for k, v := range set {
+			env[k] = v
+		}
 		if _, err := Load(getenv(env)); err == nil {
-			t.Errorf("без %s ожидал отказ старта", missing)
+			t.Errorf("%v: ожидал отказ старта", set)
 		}
 	}
 }
