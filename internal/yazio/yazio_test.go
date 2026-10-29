@@ -26,6 +26,7 @@ type fakeYazio struct {
 	blocked  bool
 	badLogin bool
 	day      string
+	get      map[string]string // ответы на GET по пути; остальные — day
 }
 
 func (f *fakeYazio) handler(t *testing.T) http.Handler {
@@ -60,6 +61,8 @@ func (f *fakeYazio) handler(t *testing.T) http.Handler {
 		case f.blocked:
 			w.WriteHeader(http.StatusForbidden)
 			io.WriteString(w, `{"error":"version_blocked"}`)
+		case r.Method == http.MethodGet && f.get[r.URL.Path] != "":
+			io.WriteString(w, f.get[r.URL.Path])
 		case r.Method == http.MethodGet:
 			io.WriteString(w, f.day)
 		default:
@@ -84,6 +87,7 @@ func TestAddBody(t *testing.T) {
 	es := []Entry{
 		{ID: "id-1", Time: at, Daytime: Lunch, Name: "Гречка с курицей", Kcal: 620, Protein: 38, Fat: 18.5, Carb: 72},
 		{ID: "id-2", Time: at, Daytime: Lunch, Name: "Компот", Kcal: 90, Protein: 0, Fat: 0, Carb: 22},
+		{ID: "id-3", Time: at, Daytime: Lunch, Name: "Шорли", Kcal: 150, ProductID: "prod-1", Amount: 500},
 	}
 	if err := c.Add(context.Background(), es); err != nil {
 		t.Fatal(err)
@@ -94,7 +98,11 @@ func TestAddBody(t *testing.T) {
 	var got map[string]any
 	json.Unmarshal([]byte(f.bodies[0]), &got)
 	want := map[string]any{
-		"products": []any{}, "recipe_portions": []any{},
+		"products": []any{map[string]any{
+			"id": "id-3", "product_id": "prod-1", "amount": 500.0, "serving": nil, "serving_quantity": nil,
+			"daytime": "lunch", "date": "2026-10-28 13:05:09",
+		}},
+		"recipe_portions": []any{},
 		"simple_products": []any{map[string]any{
 			"id": "id-1", "date": "2026-10-28 13:05:09", "daytime": "lunch", "name": "Гречка с курицей",
 			"nutrients":       map[string]any{"energy.energy": 620.0, "nutrient.protein": 38.0, "nutrient.fat": 18.5, "nutrient.carb": 72.0},
@@ -116,11 +124,16 @@ func TestAddBody(t *testing.T) {
 func TestDeleteBody(t *testing.T) {
 	f := &fakeYazio{}
 	c := newClient(t, f)
-	if err := c.Delete(context.Background(), "id-1"); err != nil {
+	ctx := context.Background()
+	if err := c.Delete(ctx, "id-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if f.reqs[0] != "DELETE /user/consumed-items t1" || f.bodies[0] != `{"simple_products":"id-1"}` {
-		t.Fatalf("%q %q", f.reqs[0], f.bodies[0])
+	if err := c.Delete(ctx, "id-2", true); err != nil {
+		t.Fatal(err)
+	}
+	if f.reqs[0] != "DELETE /user/consumed-items t1" || f.bodies[0] != `{"simple_products":"id-1"}` ||
+		f.bodies[1] != `{"products":"id-2"}` {
+		t.Fatalf("%q %q", f.reqs, f.bodies)
 	}
 }
 
@@ -128,7 +141,7 @@ func TestDay(t *testing.T) {
 	f := &fakeYazio{day: `{"products":[{"id":"p"}],"recipe_portions":[],"simple_products":[{"id":"a","name":"x"},{"id":"b"}]}`}
 	c := newClient(t, f)
 	ids, err := c.Day(context.Background(), "2026-10-28")
-	if err != nil || strings.Join(ids, ",") != "a,b" {
+	if err != nil || strings.Join(ids, ",") != "p,a,b" {
 		t.Fatalf("%v %v", ids, err)
 	}
 	if f.reqs[0] != "GET /user/consumed-items?date=2026-10-28 t1" {
@@ -168,18 +181,55 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+// Ответ поиска записан с живого API 29.10.2026 (сокращён).
+const searchResult = `[{"score":110,"name":"Шорли яблочный с клубникой и мятой","product_id":"e129","serving":"bottle","serving_quantity":1,"amount":500,"base_unit":"ml","producer":"ВкусВилл","is_verified":false,"nutrients":{"energy.energy":0.3,"nutrient.carb":0.075,"nutrient.fat":0,"nutrient.protein":0},"countries":["RU"],"language":"ru"}]`
+
+// Поиск берёт пол и страну базы из профиля, профиль читается один раз.
+func TestSearch(t *testing.T) {
+	f := &fakeYazio{get: map[string]string{
+		"/user":            `{"sex":"female","country":"DE","food_database_country":"RU","email":"u@x.ru"}`,
+		"/products/search": searchResult,
+	}}
+	c := newClient(t, f)
+	ctx := context.Background()
+	ps, err := c.Search(ctx, "шорли клубника")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Product{ID: "e129", Name: "Шорли яблочный с клубникой и мятой", Producer: "ВкусВилл", Unit: "ml", Kcal: 0.3, Carb: 0.075}
+	if len(ps) != 1 || ps[0] != want {
+		t.Fatalf("%+v", ps)
+	}
+	c.Search(ctx, "кефир")
+	wantReqs := []string{
+		"GET /user t1",
+		"GET /products/search?countries=RU&query=%D1%88%D0%BE%D1%80%D0%BB%D0%B8+%D0%BA%D0%BB%D1%83%D0%B1%D0%BD%D0%B8%D0%BA%D0%B0&sex=female t1",
+		"GET /products/search?countries=RU&query=%D0%BA%D0%B5%D1%84%D0%B8%D1%80&sex=female t1",
+	}
+	if strings.Join(f.reqs, "\n") != strings.Join(wantReqs, "\n") {
+		t.Fatalf("запросы\n%s", strings.Join(f.reqs, "\n"))
+	}
+}
+
+func TestSearchNeedsProfile(t *testing.T) {
+	f := &fakeYazio{get: map[string]string{"/user": `{"email":"u@x.ru"}`}}
+	if _, err := newClient(t, f).Search(context.Background(), "кефир"); err == nil {
+		t.Fatal("без пола поиск выдаст не то")
+	}
+}
+
 // Токен входа переиспользуется; протух — один повторный вход.
 func TestTokenReuseAndRelogin(t *testing.T) {
 	f := &fakeYazio{expired: map[string]bool{}}
 	c := newClient(t, f)
 	ctx := context.Background()
-	c.Delete(ctx, "a")
-	c.Delete(ctx, "b")
+	c.Delete(ctx, "a", false)
+	c.Delete(ctx, "b", false)
 	if f.logins != 1 {
 		t.Fatalf("входов %d, want 1", f.logins)
 	}
 	f.expired["t1"] = true
-	if err := c.Delete(ctx, "c"); err != nil {
+	if err := c.Delete(ctx, "c", false); err != nil {
 		t.Fatal(err)
 	}
 	if f.logins != 2 || !strings.HasSuffix(f.reqs[len(f.reqs)-1], " t2") {
@@ -191,7 +241,7 @@ func TestTokenReuseAndRelogin(t *testing.T) {
 func TestReloginOnce(t *testing.T) {
 	f := &fakeYazio{expired: map[string]bool{"t1": true, "t2": true, "t3": true}}
 	c := newClient(t, f)
-	if err := c.Delete(context.Background(), "a"); err == nil {
+	if err := c.Delete(context.Background(), "a", false); err == nil {
 		t.Fatal("ожидал ошибку")
 	}
 	if f.logins != 2 {
@@ -201,11 +251,11 @@ func TestReloginOnce(t *testing.T) {
 
 func TestErrors(t *testing.T) {
 	f := &fakeYazio{badLogin: true}
-	if err := newClient(t, f).Delete(context.Background(), "a"); !errors.Is(err, ErrAuth) {
+	if err := newClient(t, f).Delete(context.Background(), "a", false); !errors.Is(err, ErrAuth) {
 		t.Fatalf("плохой пароль: %v", err)
 	}
 	f = &fakeYazio{blocked: true}
-	if err := newClient(t, f).Delete(context.Background(), "a"); !errors.Is(err, ErrVersionBlocked) {
+	if err := newClient(t, f).Delete(context.Background(), "a", false); !errors.Is(err, ErrVersionBlocked) {
 		t.Fatalf("версия: %v", err)
 	}
 }
@@ -214,7 +264,7 @@ func TestErrors(t *testing.T) {
 func TestErrorsDoNotLeakPassword(t *testing.T) {
 	c := New("u@x.ru", "SECRET-PW", "", time.Second)
 	c.base = "http://127.0.0.1:1"
-	err := c.Delete(context.Background(), "a")
+	err := c.Delete(context.Background(), "a", false)
 	if err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("err %v", err)
 	}

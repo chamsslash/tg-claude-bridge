@@ -32,6 +32,10 @@ type fakeDiary struct {
 	keep       bool // Delete «удаляет», но запись остаётся
 	sum        yazio.Summary
 	summaryErr error
+	products   []string                   // id, удалённые как продукты
+	found      map[string][]yazio.Product // ответы поиска по запросу
+	searchErr  error
+	searches   []string
 }
 
 func (d *fakeDiary) Add(_ context.Context, es []yazio.Entry) error {
@@ -49,9 +53,16 @@ func (d *fakeDiary) Add(_ context.Context, es []yazio.Entry) error {
 func (d *fakeDiary) Summary(context.Context, string) (yazio.Summary, error) {
 	return d.sum, d.summaryErr
 }
-func (d *fakeDiary) Delete(_ context.Context, id string) error {
+func (d *fakeDiary) Delete(_ context.Context, id string, product bool) error {
 	d.deleted = append(d.deleted, id)
+	if product {
+		d.products = append(d.products, id)
+	}
 	return nil
+}
+func (d *fakeDiary) Search(_ context.Context, q string) ([]yazio.Product, error) {
+	d.searches = append(d.searches, q)
+	return d.found[q], d.searchErr
 }
 func (d *fakeDiary) Day(_ context.Context, day string) ([]string, error) {
 	if d.keep {
@@ -645,5 +656,133 @@ func TestSummaryLine(t *testing.T) {
 	text, mk := f.m.Photo(context.Background(), jpeg, "")
 	if !strings.HasSuffix(text, SavedNote) || mk == nil {
 		t.Fatalf("без итога дня запись всё равно с кнопкой:\n%s", text)
+	}
+}
+
+// Шорли с фото: Claude назвал бренд и запрос, оценил 500 мл в 150 ккал.
+const shorli = `{"is_food":true,"daytime":"snack","dishes":[{"name":"Шорли яблочный с клубникой и мятой","saved":"",
+	"product":{"brand":"ВкусВилл","query":"шорли клубника мята"},
+	"items":[{"name":"шорли яблочный","grams":500,"kcal":150,"protein":0.5,"fat":0,"carb":36}]}],"reply":""}`
+
+var shorliYazio = yazio.Product{ID: "e129", Name: "Шорли яблочный с клубникой и мятой", Producer: "ВкусВилл",
+	Unit: "ml", Kcal: 0.3, Carb: 0.075}
+
+// Еда с фото ищет состав в вебе — у неё одной в мосту веб есть.
+func TestRequestHasWeb(t *testing.T) {
+	f := newFixture(t)
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "")
+	if !f.req.Web {
+		t.Fatal("запрос еды без веба")
+	}
+}
+
+// Покупное нашлось в базе Yazio: пишется продуктом из базы, с её КБЖУ.
+func TestProductMatched(t *testing.T) {
+	f := newFixture(t)
+	f.reply = shorli
+	f.d.found = map[string][]yazio.Product{"шорли клубника мята": {
+		{ID: "x", Name: "Шорли", Producer: "Самокат", Unit: "ml", Kcal: 0.3},
+		shorliYazio,
+	}}
+	text, _ := f.m.Photo(context.Background(), jpeg, "")
+	if strings.Join(f.d.searches, "|") != "ВкусВилл шорли клубника мята|шорли клубника мята" {
+		t.Fatalf("поиски %q", f.d.searches)
+	}
+	e := f.d.added[0]
+	if e.ProductID != "e129" || e.Amount != 500 || e.Kcal != 150 || e.Carb != 37.5 || e.Protein != 0 ||
+		e.Name != "Шорли яблочный с клубникой и мятой" {
+		t.Fatalf("запись %+v", e)
+	}
+	if !strings.Contains(text, "• Шорли яблочный с клубникой и мятой, ~500 г — 150 ккал"+FromYazioNote+"\n") {
+		t.Fatalf("ответ\n%s", text)
+	}
+	// В базе блюд — состав по Yazio.
+	for _, d := range dishes(f) {
+		if len(d.Items) != 1 || d.Items[0].Carb != 37.5 {
+			t.Fatalf("база %+v", d)
+		}
+	}
+}
+
+// Не тот бренд, не те калории, поиск лёг — остаётся оценка Claude.
+func TestProductFallsBack(t *testing.T) {
+	for name, tc := range map[string]struct {
+		found []yazio.Product
+		err   error
+	}{
+		"другой бренд":      {found: []yazio.Product{{ID: "x", Producer: "Самокат", Unit: "ml", Kcal: 0.3}}},
+		"другие калории":    {found: []yazio.Product{{ID: "x", Producer: "ВкусВилл", Unit: "ml", Kcal: 0.55}}},
+		"порциями, не г/мл": {found: []yazio.Product{{ID: "x", Producer: "ВкусВилл", Unit: "piece", Kcal: 0.3}}},
+		"поиск не ответил":  {err: errors.New("503")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.reply = shorli
+			f.d.found = map[string][]yazio.Product{"шорли клубника мята": tc.found}
+			f.d.searchErr = tc.err
+			text, _ := f.m.Photo(context.Background(), jpeg, "")
+			e := f.d.added[0]
+			if e.ProductID != "" || e.Kcal != 150 || e.Carb != 36 || strings.Contains(text, FromYazioNote) {
+				t.Fatalf("запись %+v\n%s", e, text)
+			}
+		})
+	}
+}
+
+// Домашнюю еду в базе Yazio не ищем.
+func TestHomeFoodNotSearched(t *testing.T) {
+	f := newFixture(t)
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "")
+	if len(f.d.searches) != 0 {
+		t.Fatalf("поиски %q", f.d.searches)
+	}
+}
+
+// Продукт с компотом в одном приёме: отмена удаляет каждую запись своим
+// способом.
+func TestUndoProduct(t *testing.T) {
+	f := newFixture(t)
+	f.reply = `{"is_food":true,"dishes":[` +
+		`{"name":"Шорли","product":{"brand":"ВкусВилл","query":"шорли клубника мята"},"items":[{"name":"шорли","grams":500,"kcal":150,"protein":0,"fat":0,"carb":36}]},` +
+		`{"name":"Сырник","items":[{"name":"сырник","grams":100,"kcal":220,"protein":15,"fat":10,"carb":18}]}]}`
+	f.d.found = map[string][]yazio.Product{"шорли клубника мята": {shorliYazio}}
+	_, mk := f.m.Photo(context.Background(), jpeg, "")
+	prod, simple := f.d.added[0].ID, f.d.added[1].ID
+	if f.d.added[0].ProductID == "" || f.d.added[1].ProductID != "" {
+		t.Fatalf("%+v", f.d.added)
+	}
+	data := mk["inline_keyboard"].([][]telegram.Button)[0][0].Data
+	text, _, _ := f.m.Press(context.Background(), data)
+	if !strings.HasPrefix(text, UndoneText+"Шорли, Сырник") || len(f.d.deleted) != 2 ||
+		len(f.d.products) != 1 || f.d.products[0] != prod || !contains(f.d.deleted, simple) {
+		t.Fatalf("%q удалены %v, продуктами %v", text, f.d.deleted, f.d.products)
+	}
+}
+
+func TestPick(t *testing.T) {
+	p := func(producer string, kcal float64) yazio.Product {
+		return yazio.Product{ID: producer, Producer: producer, Unit: "g", Kcal: kcal}
+	}
+	for _, tc := range []struct {
+		name  string
+		found yazio.Product
+		brand string
+		kcal  float64
+		ok    bool
+	}{
+		{"бренд с пробелом и регистром", p("Вкус Вилл", 0.3), "ВкусВилл", 0.3, true},
+		{"ё и е", p("Ёлки", 2), "елки", 2, true},
+		{"бренд внутри", p("ВкусВилл (Избёнка)", 0.3), "вкусвилл", 0.3, true},
+		{"напиток: запас 8 ккал на 100", p("ВВ", 0.37), "вв", 0.3, true},
+		{"напиток: больше запаса", p("ВВ", 0.39), "вв", 0.3, false},
+		{"еда: 15%", p("ВВ", 4.55), "вв", 4.0, true},
+		{"еда: больше 15%", p("ВВ", 4.7), "вв", 4.0, false},
+		{"без производителя", p("", 0.3), "вв", 0.3, false},
+	} {
+		if _, ok := pick([]yazio.Product{tc.found}, tc.brand, tc.kcal); ok != tc.ok {
+			t.Errorf("%s: %v, want %v", tc.name, ok, tc.ok)
+		}
 	}
 }

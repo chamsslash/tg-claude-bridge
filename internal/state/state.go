@@ -64,12 +64,14 @@ type MealState struct {
 	Dishes  map[string]Dish      `json:"dishes"`
 }
 
-// MealEntry — один приём пищи: IDs — id записей «быстрого ввода» в Yazio
-// (по одной на блюдо), Day — день дневника (ГГГГ-ММ-ДД), по нему
-// проверяется удаление. NewDishes — блюда, которые этот приём добавил в
-// базу: отмена убирает и их.
+// MealEntry — один приём пищи: IDs — id записей «быстрого ввода» в Yazio,
+// Products — id записей продуктов из базы Yazio (по записи на блюдо; удаляют
+// их по-разному), Day — день дневника (ГГГГ-ММ-ДД), по нему проверяется
+// удаление. NewDishes — блюда, которые этот приём добавил в базу: отмена
+// убирает и их.
 type MealEntry struct {
 	IDs       []string  `json:"ids"`
+	Products  []string  `json:"products,omitempty"`
 	Day       string    `json:"day"`
 	Name      string    `json:"name"`
 	NewDishes []string  `json:"new_dishes,omitempty"`

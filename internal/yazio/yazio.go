@@ -2,8 +2,9 @@
 //
 // Публичного API у Yazio нет: это тот же закрытый API v22, в который ходит
 // приложение (справочник — github.com/yazio-community/yazio-api-specification).
-// Мост пишет в дневник только «быстрый ввод» (simple_product): название и
-// КБЖУ порции, без поиска продуктов в базе; читает итог дня с целями.
+// Мост пишет в дневник «быстрый ввод» (simple_product: название и КБЖУ
+// порции) или продукт из базы Yazio (product: id продукта и вес), ищет
+// продукты и читает итог дня с целями.
 package yazio
 
 import (
@@ -52,16 +53,26 @@ const (
 	Snack     = "snack"
 )
 
-// Entry — запись «быстрого ввода»: КБЖУ — на всю порцию.
+// Entry — запись в дневник. Без ProductID — «быстрый ввод»: название и КБЖУ
+// на всю порцию. С ProductID — продукт из базы Yazio весом Amount (г или мл),
+// КБЖУ Yazio считает сам, а Name и КБЖУ здесь — для ответа владельцу.
 type Entry struct {
-	ID      string
-	Time    time.Time
-	Daytime string
-	Name    string
-	Kcal    float64
-	Protein float64
-	Fat     float64
-	Carb    float64
+	ID        string
+	Time      time.Time
+	Daytime   string
+	Name      string
+	Kcal      float64
+	Protein   float64
+	Fat       float64
+	Carb      float64
+	ProductID string
+	Amount    float64
+}
+
+// Product — продукт из базы Yazio: КБЖУ на 1 г или 1 мл (Unit — g или ml).
+type Product struct {
+	ID, Name, Producer, Unit string
+	Kcal, Protein, Fat, Carb float64
 }
 
 type Client struct {
@@ -69,8 +80,16 @@ type Client struct {
 	http           *http.Client
 	base           string
 
-	mu    sync.Mutex
-	token string
+	mu      sync.Mutex
+	token   string
+	profile *profile
+}
+
+// profile — что из профиля нужно поиску: выдача зависит от пола и страны
+// базы продуктов.
+type profile struct {
+	Sex     string `json:"sex"`
+	Country string `json:"food_database_country"`
 }
 
 // New: пустые user и pass — Yazio не настроен; пустой ua — DefaultUserAgent.
@@ -87,12 +106,30 @@ func (c *Client) Enabled() bool { return c != nil && c.user != "" && c.pass != "
 // Add пишет записи в дневник одним запросом: блюдо и напиток с одного фото
 // появляются вместе или не появляются вовсе.
 func (c *Client) Add(ctx context.Context, es []Entry) error {
-	items := make([]any, 0, len(es))
+	products, simple := []any{}, []any{}
 	for _, e := range es {
-		items = append(items, simpleProduct(e))
+		if e.ProductID != "" {
+			products = append(products, product(e))
+		} else {
+			simple = append(simple, simpleProduct(e))
+		}
 	}
-	body := map[string]any{"products": []any{}, "recipe_portions": []any{}, "simple_products": items}
+	body := map[string]any{"products": products, "recipe_portions": []any{}, "simple_products": simple}
 	return c.do(ctx, http.MethodPost, "/user/consumed-items", body, nil)
+}
+
+// product — продукт из базы весом в его единицах; без порции («бутылка»),
+// так Yazio не пересчитывает вес сам. Проверено 29.10.2026.
+func product(e Entry) map[string]any {
+	return map[string]any{
+		"id":               e.ID,
+		"product_id":       e.ProductID,
+		"amount":           e.Amount,
+		"serving":          nil,
+		"serving_quantity": nil,
+		"daytime":          e.Daytime,
+		"date":             e.Time.In(msk.Location).Format("2006-01-02 15:04:05"),
+	}
 }
 
 func simpleProduct(e Entry) map[string]any {
@@ -112,28 +149,84 @@ func simpleProduct(e Entry) map[string]any {
 	}
 }
 
-// Delete удаляет запись. Yazio отвечает успехом и тогда, когда удалять было
-// нечего, — исход проверяют через Day.
-func (c *Client) Delete(ctx context.Context, id string) error {
+// Delete удаляет запись: product — продукт из базы, иначе «быстрый ввод».
+// Yazio отвечает успехом и тогда, когда удалять было нечего, — исход
+// проверяют через Day.
+func (c *Client) Delete(ctx context.Context, id string, product bool) error {
+	kind := "simple_products"
+	if product {
+		kind = "products"
+	}
 	// Строка, а не массив: так принимает API.
-	return c.do(ctx, http.MethodDelete, "/user/consumed-items", map[string]string{"simple_products": id}, nil)
+	return c.do(ctx, http.MethodDelete, "/user/consumed-items", map[string]string{kind: id}, nil)
 }
 
-// Day — id записей «быстрого ввода» за день (ГГГГ-ММ-ДД).
+// Day — id записей за день (ГГГГ-ММ-ДД): «быстрого ввода» и продуктов.
 func (c *Client) Day(ctx context.Context, day string) ([]string, error) {
+	type ref struct {
+		ID string `json:"id"`
+	}
 	var out struct {
-		Simple []struct {
-			ID string `json:"id"`
-		} `json:"simple_products"`
+		Products []ref `json:"products"`
+		Simple   []ref `json:"simple_products"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/user/consumed-items?date="+url.QueryEscape(day), nil, &out); err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(out.Simple))
-	for _, s := range out.Simple {
-		ids = append(ids, s.ID)
+	ids := make([]string, 0, len(out.Products)+len(out.Simple))
+	for _, r := range append(out.Products, out.Simple...) {
+		ids = append(ids, r.ID)
 	}
 	return ids, nil
+}
+
+// Search ищет продукты в базе Yazio, лучшие — первыми. Поиск ищет все слова
+// запроса в названии: «шорли клубника мята» найдёт, а с брендом, которого
+// нет в названии, — уже ничего.
+func (c *Client) Search(ctx context.Context, query string) ([]Product, error) {
+	p, err := c.me(ctx)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{"query": {query}, "sex": {p.Sex}, "countries": {p.Country}}
+	var out []struct {
+		ID        string             `json:"product_id"`
+		Name      string             `json:"name"`
+		Producer  string             `json:"producer"`
+		Unit      string             `json:"base_unit"`
+		Nutrients map[string]float64 `json:"nutrients"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/products/search?"+q.Encode(), nil, &out); err != nil {
+		return nil, err
+	}
+	ps := make([]Product, 0, len(out))
+	for _, o := range out {
+		ps = append(ps, Product{ID: o.ID, Name: o.Name, Producer: o.Producer, Unit: o.Unit,
+			Kcal: o.Nutrients["energy.energy"], Protein: o.Nutrients["nutrient.protein"],
+			Fat: o.Nutrients["nutrient.fat"], Carb: o.Nutrients["nutrient.carb"]})
+	}
+	return ps, nil
+}
+
+// me — профиль владельца; читается один раз.
+func (c *Client) me(ctx context.Context) (profile, error) {
+	c.mu.Lock()
+	p := c.profile
+	c.mu.Unlock()
+	if p != nil {
+		return *p, nil
+	}
+	var out profile
+	if err := c.do(ctx, http.MethodGet, "/user", nil, &out); err != nil {
+		return profile{}, err
+	}
+	if out.Sex == "" || out.Country == "" {
+		return profile{}, errors.New("Yazio: в профиле нет пола или страны базы продуктов")
+	}
+	c.mu.Lock()
+	c.profile = &out
+	c.mu.Unlock()
+	return out, nil
 }
 
 // Summary — итог дня, как на главном экране приложения: съедено и цели.
