@@ -1,8 +1,9 @@
 // Package bot слушает Telegram-бота владельца и раздаёт сообщения сервисам.
 //
-// Кнопки внизу — сводка Gmail и календарь на сегодня. Свободный текст —
-// команда календаря (её разбирает Claude без инструментов, выполняет
-// сервис). Фото — еда для Yazio. Кнопки под ответами («Отменить»,
+// Кнопки внизу — подсчёт калорий, сводка Gmail и календарь на сегодня.
+// Свободный текст — команда календаря (её разбирает Claude без
+// инструментов, выполняет сервис), а пока подсчёт калорий ждёт описания —
+// описание еды. Фото — еда для Yazio. Кнопки под ответами («Отменить»,
 // «Удалить») ловят те же сервисы, что их нарисовали.
 package bot
 
@@ -19,12 +20,13 @@ import (
 // Главный экран: постоянные кнопки под полем ввода. Нажатие присылает
 // подпись обычным сообщением, по ней и узнаётся действие.
 const (
+	MealButton     = "🍽 Калории (ИИ)"
 	GmailButton    = "📧 Gmail за сутки"
 	CalendarButton = "📆 Календарь"
 )
 
 const (
-	StartText  = "Кнопки — внизу. Встречу можно поставить текстом: «поставь созвон завтра в 15». Фото еды запишу в Yazio."
+	StartText  = "Кнопки — внизу. «🍽 Калории (ИИ)» — записать еду в Yazio по фото. Встречу можно поставить текстом: «поставь созвон завтра в 15»."
 	AckText    = "Смотрю…"
 	MealAck    = "🍽 Считаю…"
 	TextOnly   = "Понимаю текст, кнопки внизу и фото еды."
@@ -63,9 +65,13 @@ type Calendar interface {
 	Presser
 }
 
-// Meals — еда по фото (meal.Meal).
+// Meals — еда по фото (meal.Meal): кнопка, фото, описание текстом, пока
+// сценарий его ждёт, и кнопки под ответами.
 type Meals interface {
+	Start() (string, telegram.Markup)
 	Photo(ctx context.Context, img []byte, caption string) (string, telegram.Markup)
+	Text(ctx context.Context, text string) (string, telegram.Markup, bool)
+	Counts(photo bool, text string) bool
 	Presser
 }
 
@@ -89,7 +95,7 @@ func New(tg Updater, st *state.Store, chat int64, mail Mail, cal Calendar, meals
 
 // Main — главный экран.
 func Main() telegram.Markup {
-	return telegram.Keyboard([][]string{{GmailButton, CalendarButton}})
+	return telegram.Keyboard([][]string{{MealButton}, {GmailButton, CalendarButton}})
 }
 
 func (b *Bot) Run(ctx context.Context) error {
@@ -167,14 +173,25 @@ func (b *Bot) handle(ctx context.Context, u telegram.Update) {
 		b.sayMarkup(ctx, TextOnly, Main())
 	case "/start":
 		b.sayMarkup(ctx, StartText, Main())
+	case MealButton, "/meal":
+		reply, mk := b.meals.Start()
+		b.reply(ctx, reply, mk)
 	case GmailButton, "/gmail":
 		b.say(ctx, AckText)
 		b.sayMarkup(ctx, b.mail.Button(ctx), Main())
 	case CalendarButton, "/today":
 		b.sayMarkup(ctx, b.cal.Today(ctx), Main())
 	default:
-		slog.Info("команда владельца", "len", len(text))
+		if b.meals.Counts(false, text) {
+			b.say(ctx, MealAck)
+		}
 		b.typing(ctx)
+		if reply, mk, ok := b.meals.Text(ctx, text); ok {
+			slog.Info("описание еды", "len", len(text))
+			b.reply(ctx, reply, mk)
+			return
+		}
+		slog.Info("команда владельца", "len", len(text))
 		reply, mk := b.cal.Command(ctx, text)
 		b.reply(ctx, reply, mk)
 	}
@@ -188,7 +205,9 @@ func (b *Bot) photo(ctx context.Context, msg *telegram.Message) {
 		return
 	}
 	slog.Info("фото еды", "width", p.Width, "height", p.Height, "caption", msg.Caption != "")
-	b.say(ctx, MealAck)
+	if b.meals.Counts(true, msg.Caption) {
+		b.say(ctx, MealAck)
+	}
 	img, err := b.tg.Download(ctx, p.FileID, maxPhoto)
 	if err != nil {
 		if ctx.Err() == nil {

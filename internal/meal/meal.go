@@ -1,6 +1,10 @@
 // Package meal — еда по фото: владелец присылает фото, Claude оценивает
 // КБЖУ, сервис пишет запись «быстрого ввода» в дневник Yazio.
 //
+// Обычный путь — кнопка «🍽 Калории (ИИ)»: выбрать приём пищи, затем
+// прислать фото и описание в любом порядке (подпись к фото — тоже
+// описание). Фото без кнопки тоже записывается, приём пищи тогда угадывается.
+//
 // Claude здесь без инструментов, как везде в мосту: он видит только фото и
 // подпись и возвращает JSON. Числа проверяет и итог считает сервис, в Yazio
 // пишет тоже он. Под ответом — «↩️ Отменить».
@@ -19,6 +23,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,8 +35,16 @@ import (
 )
 
 const (
-	// Данные кнопки под ответом: meal:undo:<ключ>.
-	undoPrefix = "meal:undo:"
+	// Данные кнопок: meal:undo:<ключ> — под записью, meal:dt:<приём> и
+	// meal:cancel — в начале сценария.
+	prefix      = "meal:"
+	undoPrefix  = prefix + "undo:"
+	daytimeData = prefix + "dt:"
+	cancelData  = prefix + "cancel"
+
+	// flowTTL — сколько ждать фото и описание после выбора приёма пищи.
+	flowTTL = 30 * time.Minute
+	maxDesc = maxCaption
 
 	// entryTTL — сколько живёт кнопка «Отменить».
 	entryTTL = 7 * 24 * time.Hour
@@ -51,7 +64,12 @@ const (
 	NotUnderstoodText = "Не понял, что на фото. Пришли фото ещё раз или подпиши, что это и сколько."
 	DownText          = "⚠️ Yazio сейчас не отвечает — попробуй позже."
 	StaleText         = "Это действие уже выполнено или устарело."
-	SavedNote         = "Записал в Yazio. На Android запись может появиться не сразу."
+	SavedNote         = "Записал в Yazio."
+
+	ChooseText    = "🍽 Какой приём пищи?"
+	CancelledText = "Отменил. Начать заново — «🍽 Калории (ИИ)» внизу."
+	NeedPhotoText = "Описание есть. Теперь пришли фото еды."
+	NeedDescText  = "Фото есть. Теперь напиши, что это и сколько — например «гречка с курицей, тарелка ~300 г»."
 )
 
 // Diary — дневник Yazio (yazio.Client).
@@ -66,6 +84,18 @@ type Meal struct {
 	c   *llm.Client
 	st  *state.Store
 	now func() time.Time
+
+	mu   sync.Mutex
+	flow *flow
+}
+
+// flow — начатый кнопкой сценарий: приём пищи выбран, ждём фото и описание.
+// Живёт в памяти: после рестарта его проще начать заново.
+type flow struct {
+	daytime string
+	desc    string
+	img     []byte
+	at      time.Time
 }
 
 // New: d == nil — Yazio не настроен.
@@ -141,18 +171,79 @@ reply — пустая строка, если is_food.
 Оценивай реалистично, как диетолог: обычная домашняя или ресторанная
 порция, без занижения. Без Markdown и без ссылок.`
 
-// Photo разбирает фото еды и пишет его в Yazio. Ответ — текст и кнопки.
+// Start — кнопка «🍽 Калории (ИИ)»: выбор приёма пищи.
+func (m *Meal) Start() (string, telegram.Markup) {
+	if !m.Enabled() {
+		return NotConfiguredText, nil
+	}
+	return ChooseText, telegram.Inline([][]telegram.Button{
+		{{Text: "🌅 Завтрак", Data: daytimeData + yazio.Breakfast}, {Text: "🍲 Обед", Data: daytimeData + yazio.Lunch}},
+		{{Text: "🌙 Ужин", Data: daytimeData + yazio.Dinner}, {Text: "🍎 Перекус", Data: daytimeData + yazio.Snack}},
+		{{Text: "Отмена", Data: cancelData}},
+	})
+}
+
+// Waiting — сценарий начат и ждёт фото или описание: текст владельца тогда
+// идёт сюда, а не в календарь.
+func (m *Meal) Waiting() bool { return m.current() != nil }
+
+// Counts — пойдёт ли фото (photo) или текст в подсчёт сразу: тогда стоит
+// сказать «Считаю…», Claude думает секунды. Нет — сценарий попросит
+// недостающее мгновенно.
+func (m *Meal) Counts(photo bool, text string) bool {
+	f := m.current()
+	if photo {
+		return f == nil || join(f.desc, text) != ""
+	}
+	return f != nil && f.img != nil
+}
+
+// Photo — фото еды. В сценарии без описания — просьба описать; иначе фото
+// разбирается и пишется в Yazio. Ответ — текст и кнопки.
 func (m *Meal) Photo(ctx context.Context, img []byte, caption string) (string, telegram.Markup) {
+	f := m.current()
+	if f == nil {
+		return m.estimate(ctx, img, caption, "")
+	}
+	desc := join(f.desc, caption)
+	if desc == "" {
+		m.update(func(f *flow) { f.img = img })
+		return NeedDescText, cancelButton()
+	}
+	return m.estimate(ctx, img, desc, f.daytime)
+}
+
+// Text — описание еды в сценарии. false — сценария нет, текст не сюда.
+func (m *Meal) Text(ctx context.Context, text string) (string, telegram.Markup, bool) {
+	f := m.current()
+	if f == nil {
+		return "", nil, false
+	}
+	desc := join(f.desc, text)
+	m.update(func(f *flow) { f.desc = desc })
+	if f.img == nil {
+		return NeedPhotoText, cancelButton(), true
+	}
+	reply, mk := m.estimate(ctx, f.img, desc, f.daytime)
+	return reply, mk, true
+}
+
+// estimate разбирает фото и пишет его в Yazio; daytime — выбранный владельцем
+// приём пищи, пустой — угадать.
+func (m *Meal) estimate(ctx context.Context, img []byte, desc, chosen string) (string, telegram.Markup) {
 	switch {
 	case !m.Enabled():
 		return NotConfiguredText, nil
 	case !m.c.Enabled():
 		return NoClaudeText, nil
 	}
+	// Фото из сценария уже ушло в разбор: если он не удастся, владелец
+	// пришлёт фото ещё раз, а приём пищи и описание останутся.
+	m.update(func(f *flow) { f.img = nil })
 	now := m.now().In(msk.Location)
 	req := llm.Request{
 		System: system,
-		Prompt: prompt(now, caption),
+		Prompt: prompt(now, desc, chosen),
 		Schema: schema,
 		Images: []llm.Image{{MediaType: mediaType(img), Data: base64.StdEncoding.EncodeToString(img)}},
 	}
@@ -162,10 +253,14 @@ func (m *Meal) Photo(ctx context.Context, img []byte, caption string) (string, t
 		return ClaudeDownText, nil
 	}
 	if !res.IsFood {
+		m.finish()
 		if r := line(res.Reply, 300); r != "" {
 			return r, nil
 		}
 		return NotUnderstoodText, nil
+	}
+	if chosen != "" {
+		res.Daytime = chosen
 	}
 	e, items, ok := check(res, now)
 	if !ok {
@@ -176,6 +271,7 @@ func (m *Meal) Photo(ctx context.Context, img []byte, caption string) (string, t
 		slog.Warn("не записал еду в Yazio", "err", err)
 		return failure(err), nil
 	}
+	m.finish()
 	slog.Info("еда записана", "daytime", e.Daytime, "kcal", math.Round(e.Kcal), "items", len(items))
 	text := reply(e, items)
 	key, err := m.remember(state.MealEntry{ID: e.ID, Day: now.Format("2006-01-02"), Name: e.Name})
@@ -185,13 +281,32 @@ func (m *Meal) Photo(ctx context.Context, img []byte, caption string) (string, t
 	return text, telegram.Inline([][]telegram.Button{{{Text: "↩️ Отменить", Data: undoPrefix + key}}})
 }
 
-// Press — «Отменить» под записью. false — кнопка не еды.
+// Press — кнопки еды: выбор приёма пищи, отмена сценария и «Отменить» под
+// записью. false — кнопка не еды.
 func (m *Meal) Press(ctx context.Context, data string) (string, telegram.Markup, bool) {
-	if !strings.HasPrefix(data, undoPrefix) {
+	if !strings.HasPrefix(data, prefix) {
 		return "", nil, false
 	}
 	if !m.Enabled() {
 		return NotConfiguredText, nil, true
+	}
+	switch {
+	case data == cancelData:
+		m.finish()
+		return CancelledText, nil, true
+	case strings.HasPrefix(data, daytimeData):
+		d := strings.TrimPrefix(data, daytimeData)
+		name, ok := daytimeNames[d]
+		if !ok {
+			return StaleText, nil, true
+		}
+		m.mu.Lock()
+		m.flow = &flow{daytime: d, at: m.now()}
+		m.mu.Unlock()
+		return "🍽 " + name + ". Пришли фото еды и подпиши, что это и сколько — например «гречка с курицей, тарелка ~300 г».",
+			cancelButton(), true
+	case !strings.HasPrefix(data, undoPrefix):
+		return StaleText, nil, true
 	}
 	key := strings.TrimPrefix(data, undoPrefix)
 	e, ok := m.take(key)
@@ -226,8 +341,12 @@ func clean(s string) string {
 
 var weekdays = [...]string{"вс", "пн", "вт", "ср", "чт", "пт", "сб"}
 
-func prompt(now time.Time, caption string) string {
-	head := fmt.Sprintf("Сейчас: %s, %s (Москва).\n\n", now.Format("2006-01-02 15:04"), weekdays[now.Weekday()])
+func prompt(now time.Time, caption, chosen string) string {
+	head := fmt.Sprintf("Сейчас: %s, %s (Москва).\n", now.Format("2006-01-02 15:04"), weekdays[now.Weekday()])
+	if chosen != "" {
+		head += "Приём пищи выбрал владелец: " + strings.ToLower(daytimeNames[chosen]) + ".\n"
+	}
+	head += "\n"
 	caption = strings.TrimSpace(caption)
 	if caption == "" {
 		return head + "Подписи нет."
@@ -315,6 +434,53 @@ func reply(e yazio.Entry, items []item) string {
 	}
 	b.WriteString("\n" + SavedNote)
 	return b.String()
+}
+
+func cancelButton() telegram.Markup {
+	return telegram.Inline([][]telegram.Button{{{Text: "Отмена", Data: cancelData}}})
+}
+
+// current — копия начатого сценария; nil — сценария нет или он устарел.
+func (m *Meal) current() *flow {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.flow == nil {
+		return nil
+	}
+	if m.now().Sub(m.flow.at) > flowTTL {
+		m.flow = nil
+		return nil
+	}
+	f := *m.flow
+	return &f
+}
+
+// update меняет начатый сценарий, если он есть.
+func (m *Meal) update(fn func(*flow)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.flow != nil {
+		fn(m.flow)
+	}
+}
+
+// finish закрывает сценарий: запись сделана, не еда или владелец отменил.
+func (m *Meal) finish() {
+	m.mu.Lock()
+	m.flow = nil
+	m.mu.Unlock()
+}
+
+// join — описание из нескольких сообщений одной строкой.
+func join(a, b string) string {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	switch {
+	case a == "":
+		return truncate(b, maxDesc)
+	case b == "":
+		return a
+	}
+	return truncate(a+"; "+b, maxDesc)
 }
 
 // failure — текст владельцу о сбое Yazio: про пароль и версию приложения

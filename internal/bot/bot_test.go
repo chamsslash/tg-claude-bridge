@@ -56,6 +56,8 @@ type fakeServices struct {
 	commands []string
 	photos   []string
 	pressed  []string
+	texts    []string
+	waiting  bool
 }
 
 func (s *fakeServices) Button(context.Context) string { return "сводка" }
@@ -81,6 +83,17 @@ func (m mealPresser) Photo(_ context.Context, img []byte, caption string) (strin
 	m.photos = append(m.photos, string(img)+"|"+caption)
 	return "записал", telegram.Inline([][]telegram.Button{{{Text: "↩️ Отменить", Data: "meal:undo:k"}}})
 }
+func (m mealPresser) Counts(photo bool, text string) bool { return photo }
+func (m mealPresser) Start() (string, telegram.Markup) {
+	return "какой приём?", telegram.Inline([][]telegram.Button{{{Text: "Обед", Data: "meal:dt:lunch"}}})
+}
+func (m mealPresser) Text(_ context.Context, text string) (string, telegram.Markup, bool) {
+	if !m.waiting {
+		return "", nil, false
+	}
+	m.texts = append(m.texts, text)
+	return "описание принято", nil, true
+}
 func (m mealPresser) Press(_ context.Context, data string) (string, telegram.Markup, bool) {
 	if !strings.HasPrefix(data, "meal:") {
 		return "", nil, false
@@ -90,6 +103,10 @@ func (m mealPresser) Press(_ context.Context, data string) (string, telegram.Mar
 }
 
 func run(t *testing.T, updates ...telegram.Update) (*fakeTG, *fakeServices, *state.Store) {
+	return runWith(t, &fakeServices{}, updates...)
+}
+
+func runWith(t *testing.T, svc *fakeServices, updates ...telegram.Update) (*fakeTG, *fakeServices, *state.Store) {
 	t.Helper()
 	st, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
@@ -100,7 +117,6 @@ func run(t *testing.T, updates ...telegram.Update) (*fakeTG, *fakeServices, *sta
 	for _, u := range updates {
 		tg.updates = append(tg.updates, []telegram.Update{u})
 	}
-	svc := &fakeServices{}
 	b := New(tg, st, owner, svc, struct {
 		*fakeServices
 		calPresser
@@ -206,5 +222,28 @@ func TestPressRouting(t *testing.T) {
 	}
 	if len(tg.answered) != 3 {
 		t.Fatalf("часики сняты у %v", tg.answered)
+	}
+}
+
+func TestMealButton(t *testing.T) {
+	tg, _, _ := run(t, text(1, owner, MealButton))
+	if len(tg.sent) != 1 || tg.sent[0] != "какой приём?" || tg.markups[0]["inline_keyboard"] == nil {
+		t.Fatalf("%v %v", tg.sent, tg.markups)
+	}
+}
+
+// Пока подсчёт калорий ждёт описания, текст — описание, а не команда
+// календаря.
+func TestTextGoesToMealWhileWaiting(t *testing.T) {
+	tg, svc, _ := runWith(t, &fakeServices{waiting: true}, text(1, owner, "гречка 300 г"))
+	if len(svc.texts) != 1 || len(svc.commands) != 0 || tg.sent[len(tg.sent)-1] != "описание принято" {
+		t.Fatalf("%v %v %v", svc.texts, svc.commands, tg.sent)
+	}
+}
+
+func TestMainKeyboardHasMealButton(t *testing.T) {
+	kb := Main()["keyboard"].([][]map[string]string)
+	if kb[0][0]["text"] != MealButton {
+		t.Fatalf("%v", kb)
 	}
 }

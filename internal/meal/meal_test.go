@@ -114,7 +114,7 @@ func TestPhotoWritesEntry(t *testing.T) {
 	if len(f.req.Images) != 1 || f.req.Images[0].MediaType != "image/jpeg" || f.req.Images[0].Data == "" {
 		t.Fatalf("картинка не ушла Claude: %+v", f.req.Images)
 	}
-	if !strings.Contains(f.req.Prompt, "<подпись>\nобед\n</подпись>") || !strings.Contains(f.req.Prompt, "2026-10-28 13:05, ср") {
+	if !strings.Contains(f.req.Prompt, "<подпись>\nобед\n</подпись>") || strings.Contains(f.req.Prompt, "выбрал владелец") || !strings.Contains(f.req.Prompt, "2026-10-28 13:05, ср") {
 		t.Fatalf("промпт:\n%s", f.req.Prompt)
 	}
 }
@@ -282,5 +282,143 @@ func TestPressForeign(t *testing.T) {
 func TestMediaType(t *testing.T) {
 	if mediaType(jpeg) != "image/jpeg" || mediaType([]byte("\x89PNG\r\n\x1a\n0000")) != "image/png" || mediaType([]byte("??")) != "image/jpeg" {
 		t.Fatal("mediaType")
+	}
+}
+
+func press(t *testing.T, f *fixture, data string) (string, telegram.Markup) {
+	t.Helper()
+	text, mk, ok := f.m.Press(context.Background(), data)
+	if !ok {
+		t.Fatalf("кнопка %q не еды", data)
+	}
+	return text, mk
+}
+
+func TestStartButtons(t *testing.T) {
+	f := newFixture(t)
+	text, mk := f.m.Start()
+	rows := mk["inline_keyboard"].([][]telegram.Button)
+	var data []string
+	for _, r := range rows {
+		for _, b := range r {
+			data = append(data, b.Data)
+		}
+	}
+	if text != ChooseText || strings.Join(data, ",") != "meal:dt:breakfast,meal:dt:lunch,meal:dt:dinner,meal:dt:snack,meal:cancel" {
+		t.Fatalf("%q %v", text, data)
+	}
+	if f.m.Waiting() {
+		t.Fatal("до выбора приёма пищи сценарий не ждёт")
+	}
+}
+
+// Выбрал ужин, прислал фото с подписью — пишется ужин, хоть Claude и
+// сказал «обед».
+func TestFlowPhotoWithCaption(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:dinner")
+	if !f.m.Waiting() {
+		t.Fatal("после выбора сценарий ждёт фото")
+	}
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "гречка с курицей")
+	if len(f.d.added) != 1 || f.d.added[0].Daytime != yazio.Dinner {
+		t.Fatalf("%+v", f.d.added)
+	}
+	if !strings.Contains(f.req.Prompt, "выбрал владелец: ужин") || !strings.Contains(f.req.Prompt, "гречка с курицей") {
+		t.Fatalf("промпт:\n%s", f.req.Prompt)
+	}
+	if f.m.Waiting() {
+		t.Fatal("после записи сценарий закрыт")
+	}
+}
+
+// Фото без подписи — просим описание, Claude пока не зовём.
+func TestFlowPhotoThenText(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:breakfast")
+	f.reply = lunch
+	if text, mk := f.m.Photo(context.Background(), jpeg, ""); text != NeedDescText || mk == nil || f.req.System != "" {
+		t.Fatalf("%q, Claude звали: %v", text, f.req.System != "")
+	}
+	text, _, ok := f.m.Text(context.Background(), "овсянка 250 г")
+	if !ok || !strings.HasPrefix(text, "🍽 Завтрак") || len(f.d.added) != 1 || f.d.added[0].Daytime != yazio.Breakfast {
+		t.Fatalf("%q %v %+v", text, ok, f.d.added)
+	}
+	if len(f.req.Images) != 1 || !strings.Contains(f.req.Prompt, "овсянка 250 г") {
+		t.Fatalf("%+v", f.req)
+	}
+}
+
+// Сначала описание, потом фото без подписи.
+func TestFlowTextThenPhoto(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:snack")
+	if text, _, ok := f.m.Text(context.Background(), "яблоко"); !ok || text != NeedPhotoText {
+		t.Fatalf("%q %v", text, ok)
+	}
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "")
+	if len(f.d.added) != 1 || f.d.added[0].Daytime != yazio.Snack || !strings.Contains(f.req.Prompt, "яблоко") {
+		t.Fatalf("%+v\n%s", f.d.added, f.req.Prompt)
+	}
+}
+
+func TestFlowCancel(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:lunch")
+	if text, _ := press(t, f, "meal:cancel"); text != CancelledText || f.m.Waiting() {
+		t.Fatalf("%q", text)
+	}
+	if _, _, ok := f.m.Text(context.Background(), "поставь созвон"); ok {
+		t.Fatal("после отмены текст не к еде")
+	}
+}
+
+func TestFlowExpires(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:lunch")
+	f.clock = now.Add(flowTTL + time.Minute)
+	if f.m.Waiting() {
+		t.Fatal("сценарий должен устареть")
+	}
+}
+
+// Claude не ответил — приём пищи и описание остаются, фото присылают снова.
+func TestFlowSurvivesClaudeDown(t *testing.T) {
+	f := newFixture(t)
+	press(t, f, "meal:dt:dinner")
+	f.m.Text(context.Background(), "плов")
+	f.down = true
+	if text, _ := f.m.Photo(context.Background(), jpeg, ""); text != ClaudeDownText {
+		t.Fatalf("%q", text)
+	}
+	f.down = false
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "")
+	if len(f.d.added) != 1 || f.d.added[0].Daytime != yazio.Dinner || !strings.Contains(f.req.Prompt, "плов") {
+		t.Fatalf("%+v", f.d.added)
+	}
+}
+
+func TestPressUnknownMealData(t *testing.T) {
+	f := newFixture(t)
+	if text, _ := press(t, f, "meal:dt:brunch"); text != StaleText || f.m.Waiting() {
+		t.Fatalf("%q", text)
+	}
+}
+
+func TestCounts(t *testing.T) {
+	f := newFixture(t)
+	if !f.m.Counts(true, "") || f.m.Counts(false, "привет") {
+		t.Fatal("без сценария фото считается сразу, текст — не еда")
+	}
+	press(t, f, "meal:dt:lunch")
+	if f.m.Counts(true, "") || !f.m.Counts(true, "суп") || f.m.Counts(false, "суп") {
+		t.Fatal("в сценарии без описания фото ждёт описания, текст — фото")
+	}
+	f.m.Photo(context.Background(), jpeg, "")
+	if !f.m.Counts(false, "суп") {
+		t.Fatal("фото есть — описание запускает подсчёт")
 	}
 }
