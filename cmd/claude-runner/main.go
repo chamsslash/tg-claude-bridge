@@ -19,7 +19,8 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	timeout, err := time.ParseDuration(or(os.Getenv("RUN_TIMEOUT"), "3m"))
+	// Запуск с вебом — несколько поисков и страниц: минуты, а не секунды.
+	timeout, err := time.ParseDuration(or(os.Getenv("RUN_TIMEOUT"), "6m"))
 	if err != nil {
 		slog.Error("RUN_TIMEOUT", "err", err)
 		os.Exit(1)

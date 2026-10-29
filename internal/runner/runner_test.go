@@ -102,7 +102,7 @@ func TestWebFlags(t *testing.T) {
 	}
 	args := f.read(t, "args")
 	for _, want := range []string{"[--restricted]", "[--tools]\n[WebSearch,WebFetch]\n",
-		"[--allowedTools]\n[WebSearch,WebFetch]\n", "[--strict-mcp-config]", "[--max-turns]\n[20]\n"} {
+		"[--allowedTools]\n[WebSearch,WebFetch]\n", "[--strict-mcp-config]", "[--max-turns]\n[40]\n"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("нет %q в аргументах:\n%s", want, args)
 		}

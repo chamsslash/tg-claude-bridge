@@ -81,7 +81,7 @@ go test ./...
 | `TELEGRAM_CHAT_ID` | нет | перекрывает зашитый чат |
 | `GMAIL_POLL_INTERVAL` | нет | как часто сводка Gmail, по умолчанию `1h`, минимум `10m` |
 | `LLM_PER_HOUR` | нет | потолок запусков Claude в час, по умолчанию `40` |
-| `CLAUDE_TIMEOUT`, `REQUEST_TIMEOUT`, `POLL_TIMEOUT` | нет | таймауты: `5m`, `1m`, `50s` |
+| `CLAUDE_TIMEOUT`, `REQUEST_TIMEOUT`, `POLL_TIMEOUT` | нет | таймауты: `8m`, `1m`, `50s` |
 
 `claude.env` (шаблон — `claude.env.example`) — `CLAUDE_CODE_OAUTH_TOKEN`, его
 получает только контейнер `claude`.

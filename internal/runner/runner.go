@@ -45,7 +45,7 @@ var mediaTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/g
 // поиск и каждая страница — ещё ход.
 const (
 	maxTurns    = "3"
-	maxWebTurns = "20"
+	maxWebTurns = "40"
 )
 
 // webTools — инструменты запуска с web: искать и читать страницы, больше

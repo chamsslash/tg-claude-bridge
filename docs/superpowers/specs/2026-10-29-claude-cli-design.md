@@ -36,7 +36,7 @@ Claude читает чужой текст: письма Gmail и названи�
    --strict-mcp-config` с пустым MCP-конфигом, `--no-session-persistence`,
    свой системный промпт, `--json-schema` там, где нужен JSON. Запрос еды
    несёт `web: true` — тогда `--tools WebSearch,WebFetch --allowedTools
-   WebSearch,WebFetch` и до 20 ходов (поиск одного продукта — около 10);
+   WebSearch,WebFetch` и до 40 ходов (поиск одного продукта — около 10);
    других инструментов нет и тут. Вход —
    одна строка stream-json (`--input-format stream-json --output-format
    stream-json --verbose`): так в запуск можно положить картинку.
@@ -101,8 +101,8 @@ Claude возвращает:
   напиток — отдельно, напиток без калорий не пишется.
 - Покупное — по данным: таблица пищевой ценности на фото, иначе состав
   из интернета. Домашнюю еду Claude оценивает сам, а если не уверен — в
-  калорийности, составе или весе порции — сверяется в интернете. Всего не
-  больше трёх поисков на запрос. `product` — бренд и 2–4 слова названия
+  калорийности, составе или весе порции — сверяется в интернете. Поисков
+  — сколько нужно, обычно один-два, не больше восьми. `product` — бренд и 2–4 слова названия
   без бренда, только у покупного, у такого блюда один компонент.
 
 - `is_food: false` — не еда: владельцу уходит `reply`, в Yazio ничего.
@@ -209,7 +209,7 @@ Claude название и прошлый состав: состав тот же
 | `YAZIO_USERNAME`, `YAZIO_PASSWORD` | оба или ничего |
 | `YAZIO_USER_AGENT` | строка версии приложения |
 | `CLAUDE_URL` | ставит compose |
-| `LLM_PER_HOUR`, `CLAUDE_TIMEOUT`, `GMAIL_POLL_INTERVAL`, `REQUEST_TIMEOUT`, `POLL_TIMEOUT`, `TELEGRAM_CHAT_ID`, `STATE_PATH` | необязательные |
+| `LLM_PER_HOUR`, `CLAUDE_TIMEOUT` (8m, больше `RUN_TIMEOUT` обёртки — 6m), `GMAIL_POLL_INTERVAL`, `REQUEST_TIMEOUT`, `POLL_TIMEOUT`, `TELEGRAM_CHAT_ID`, `STATE_PATH` | необязательные |
 
 Токен Claude — в `claude.env`, его получает только контейнер `claude`.
 

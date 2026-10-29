@@ -99,7 +99,7 @@ func Load(getenv func(string) string) (*Config, error) {
 			return nil, errors.New("CLAUDE_URL должен быть адресом обёртки, например http://claude:8090")
 		}
 	}
-	if c.ClaudeTimeout, err = time.ParseDuration(or(getenv("CLAUDE_TIMEOUT"), "5m")); err != nil {
+	if c.ClaudeTimeout, err = time.ParseDuration(or(getenv("CLAUDE_TIMEOUT"), "8m")); err != nil {
 		return nil, fmt.Errorf("CLAUDE_TIMEOUT: %w", err)
 	}
 	c.LLMPerHour, err = strconv.Atoi(or(getenv("LLM_PER_HOUR"), "40"))
