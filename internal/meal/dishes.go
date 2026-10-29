@@ -118,6 +118,14 @@ func (m *Meal) learn(ps []portion) (ids, names []string) {
 				d = state.Dish{Name: p.name}
 			}
 			d.Items, d.Uses, d.Last = p.items, d.Uses+1, now
+			if dp := dishProduct(p); dp != nil {
+				// Найденный раньше продукт Yazio не теряется, если в этот
+				// раз поиск не ответил.
+				if dp.YazioID == "" && d.Product != nil && d.Product.YazioID != "" {
+					dp = d.Product
+				}
+				d.Product = dp
+			}
 			s.Meal.Dishes[id] = d
 			touched[id] = true
 		}

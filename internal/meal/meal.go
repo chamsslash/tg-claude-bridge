@@ -305,6 +305,9 @@ type portion struct {
 	saved   string
 	product *productRef
 	items   []item
+	// known — продукт Yazio, найденный для этого блюда раньше (из базы
+	// блюд); found — продукт Yazio, которым блюдо записано сейчас.
+	known, found *yazio.Product
 }
 
 // estimate разбирает фото и пишет его в Yazio; chosen — выбранный владельцем
@@ -538,6 +541,17 @@ func check(res result, now time.Time, base map[string]state.Dish) ([]portion, bo
 		p := portion{items: items, product: d.Product}
 		if b, ok := base[d.Saved]; ok {
 			p.saved, p.name = d.Saved, b.Name
+			// Покупное из базы остаётся покупным, даже если Claude не
+			// пометил его снова.
+			if bp := b.Product; bp != nil {
+				if p.product == nil {
+					p.product = &productRef{Brand: bp.Brand, Query: bp.Query}
+				}
+				if bp.YazioID != "" {
+					p.known = &yazio.Product{ID: bp.YazioID, Name: bp.Name, Unit: bp.Unit,
+						Kcal: bp.Kcal, Protein: bp.Protein, Fat: bp.Fat, Carb: bp.Carb}
+				}
+			}
 		} else {
 			p.name = line(d.Name, maxName)
 		}
@@ -602,12 +616,16 @@ func reply(ps []portion, fresh []string) string {
 		if len(ps) > 1 {
 			fmt.Fprintf(&b, "%s — %.0f ккал\n", p.name, p.entry.Kcal)
 		}
-		note := ""
-		if p.entry.ProductID != "" {
-			note = FromYazioNote
+		if f := p.found; f != nil {
+			// Продукт из базы: вес точный, единицы — его, калорийность на 100
+			// — чтобы сверить с этикеткой.
+			it, u := p.items[0], units[f.Unit]
+			fmt.Fprintf(&b, "• %s, %.0f %s · %.0f ккал на 100 %s — %.0f ккал%s\n",
+				it.Name, it.Grams, u, f.Kcal*100, u, it.Kcal, FromYazioNote)
+			continue
 		}
 		for _, it := range p.items {
-			fmt.Fprintf(&b, "• %s, ~%.0f г — %.0f ккал%s\n", it.Name, it.Grams, it.Kcal, note)
+			fmt.Fprintf(&b, "• %s, ~%.0f г — %.0f ккал\n", it.Name, it.Grams, it.Kcal)
 		}
 	}
 	b.WriteString("\n" + SavedNote)
@@ -616,6 +634,8 @@ func reply(ps []portion, fresh []string) string {
 	}
 	return b.String()
 }
+
+var units = map[string]string{"g": "г", "ml": "мл"}
 
 // plural — « блюдо», « блюда» или « блюд» после числа.
 func plural(n int) string {

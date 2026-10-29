@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/chamsslash/tg-claude-bridge/internal/state"
 	"github.com/chamsslash/tg-claude-bridge/internal/yazio"
 )
 
@@ -33,13 +34,18 @@ type productRef struct {
 	Query string `json:"query"`
 }
 
-// match подставляет продукты из базы Yazio в покупные блюда. Не нашлось — блюдо
-// остаётся «быстрым вводом» с оценкой Claude; поиск не ответил — тоже, и
-// остальные блюда уже не ищутся.
+// match подставляет продукты из базы Yazio в покупные блюда. Блюдо из базы
+// блюд, для которого продукт уже находился, берёт его без поиска. Не
+// нашлось — блюдо остаётся «быстрым вводом» с оценкой Claude; поиск не
+// ответил — тоже, и остальные блюда уже не ищутся.
 func (m *Meal) match(ctx context.Context, ps []portion) {
 	for i := range ps {
 		p := &ps[i]
 		if p.product == nil || len(p.items) != 1 || p.items[0].Grams <= 0 {
+			continue
+		}
+		if p.known != nil {
+			use(p, *p.known)
 			continue
 		}
 		brand, query := line(p.product.Brand, maxQuery), line(p.product.Query, maxQuery)
@@ -114,4 +120,19 @@ func use(p *portion, prod yazio.Product) {
 	p.items = []item{it}
 	p.entry.Kcal, p.entry.Protein, p.entry.Fat, p.entry.Carb = it.Kcal, it.Protein, it.Fat, it.Carb
 	p.entry.ProductID, p.entry.Amount = prod.ID, g
+	p.found = &prod
+}
+
+// dishProduct — что запомнить в базе блюд о покупном блюде; nil — блюдо не
+// покупное.
+func dishProduct(p portion) *state.DishProduct {
+	if p.product == nil {
+		return nil
+	}
+	dp := &state.DishProduct{Brand: line(p.product.Brand, maxQuery), Query: line(p.product.Query, maxQuery)}
+	if f := p.found; f != nil {
+		dp.YazioID, dp.Name, dp.Unit = f.ID, f.Name, f.Unit
+		dp.Kcal, dp.Protein, dp.Fat, dp.Carb = f.Kcal, f.Protein, f.Fat, f.Carb
+	}
+	return dp
 }

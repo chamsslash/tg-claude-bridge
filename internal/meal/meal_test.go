@@ -694,7 +694,7 @@ func TestProductMatched(t *testing.T) {
 		e.Name != "Шорли яблочный с клубникой и мятой" {
 		t.Fatalf("запись %+v", e)
 	}
-	if !strings.Contains(text, "• Шорли яблочный с клубникой и мятой, ~500 г — 150 ккал"+FromYazioNote+"\n") {
+	if !strings.Contains(text, "• Шорли яблочный с клубникой и мятой, 500 мл · 30 ккал на 100 мл — 150 ккал"+FromYazioNote+"\n") {
 		t.Fatalf("ответ\n%s", text)
 	}
 	// В базе блюд — состав по Yazio.
@@ -784,5 +784,66 @@ func TestPick(t *testing.T) {
 		if _, ok := pick([]yazio.Product{tc.found}, tc.brand, tc.kcal); ok != tc.ok {
 			t.Errorf("%s: %v, want %v", tc.name, ok, tc.ok)
 		}
+	}
+}
+
+// Покупное запоминается в базе блюд вместе с продуктом Yazio: выбранное
+// кнопкой, оно пишется тем же продуктом без поиска, даже если Claude не
+// пометил его покупным.
+func TestBaseKeepsProduct(t *testing.T) {
+	f := newFixture(t)
+	f.reply = shorli
+	f.d.found = map[string][]yazio.Product{"шорли клубника мята": {shorliYazio}}
+	f.m.Photo(context.Background(), jpeg, "")
+	id := onlyID(t, f)
+	bp := dishes(f)[id].Product
+	if bp == nil || bp.Brand != "ВкусВилл" || bp.Query != "шорли клубника мята" || bp.YazioID != "e129" ||
+		bp.Unit != "ml" || bp.Kcal != 0.3 || bp.Carb != 0.075 {
+		t.Fatalf("в базе %+v", bp)
+	}
+
+	f.d.searches, f.d.found = nil, nil
+	f.reply = `{"is_food":true,"dishes":[{"name":"Шорли яблочный с клубникой и мятой","saved":"` + id + `",
+		"items":[{"name":"шорли","grams":330,"kcal":120,"protein":0,"fat":0,"carb":30}]}]}`
+	text, _ := f.m.Photo(context.Background(), jpeg, "")
+	e := f.d.added[len(f.d.added)-1]
+	if len(f.d.searches) != 0 || e.ProductID != "e129" || e.Amount != 330 || e.Kcal != 99 || e.Carb != 24.8 {
+		t.Fatalf("поиски %q, запись %+v", f.d.searches, e)
+	}
+	if !strings.Contains(text, "330 мл · 30 ккал на 100 мл — 99 ккал"+FromYazioNote) {
+		t.Fatalf("ответ\n%s", text)
+	}
+}
+
+// Покупное, которого в Yazio не нашлось, из базы ищется снова — по бренду
+// и запросу из базы; найденное потом не теряется, если поиск лёг.
+func TestBaseProductSearchedAgain(t *testing.T) {
+	f := newFixture(t)
+	f.reply = shorli
+	f.m.Photo(context.Background(), jpeg, "")
+	id := onlyID(t, f)
+	if bp := dishes(f)[id].Product; bp == nil || bp.YazioID != "" {
+		t.Fatalf("в базе %+v", bp)
+	}
+
+	again := `{"is_food":true,"dishes":[{"name":"Шорли","saved":"` + id + `",
+		"items":[{"name":"шорли","grams":500,"kcal":150,"protein":0,"fat":0,"carb":36}]}]}`
+	f.d.searches = nil
+	f.d.found = map[string][]yazio.Product{"шорли клубника мята": {shorliYazio}}
+	f.reply = again
+	f.m.Photo(context.Background(), jpeg, "")
+	if strings.Join(f.d.searches, "|") != "ВкусВилл шорли клубника мята|шорли клубника мята" ||
+		f.d.added[len(f.d.added)-1].ProductID != "e129" || dishes(f)[id].Product.YazioID != "e129" {
+		t.Fatalf("поиски %q, запись %+v, база %+v", f.d.searches, f.d.added[len(f.d.added)-1], dishes(f)[id].Product)
+	}
+}
+
+// Домашнее блюдо в базе — без пометки покупного.
+func TestHomeDishNoProduct(t *testing.T) {
+	f := newFixture(t)
+	f.reply = lunch
+	f.m.Photo(context.Background(), jpeg, "")
+	if bp := dishes(f)[onlyID(t, f)].Product; bp != nil {
+		t.Fatalf("%+v", bp)
 	}
 }

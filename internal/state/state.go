@@ -80,10 +80,25 @@ type MealEntry struct {
 
 // Dish — блюдо из базы владельца: состав и КБЖУ последней порции.
 type Dish struct {
-	Name  string     `json:"name"`
-	Items []DishItem `json:"items"`
-	Uses  int        `json:"uses"`
-	Last  time.Time  `json:"last"`
+	Name    string       `json:"name"`
+	Items   []DishItem   `json:"items"`
+	Product *DishProduct `json:"product,omitempty"`
+	Uses    int          `json:"uses"`
+	Last    time.Time    `json:"last"`
+}
+
+// DishProduct — покупное блюдо: бренд и запрос для поиска в базе Yazio, а
+// если продукт там уже нашёлся — он сам, КБЖУ на 1 г или 1 мл (Unit).
+type DishProduct struct {
+	Brand   string  `json:"brand"`
+	Query   string  `json:"query"`
+	YazioID string  `json:"yazio_id,omitempty"`
+	Name    string  `json:"name,omitempty"`
+	Unit    string  `json:"unit,omitempty"`
+	Kcal    float64 `json:"kcal,omitempty"`
+	Protein float64 `json:"protein,omitempty"`
+	Fat     float64 `json:"fat,omitempty"`
+	Carb    float64 `json:"carb,omitempty"`
 }
 
 // DishItem — компонент блюда: КБЖУ — на вес Grams, а не на 100 г.
