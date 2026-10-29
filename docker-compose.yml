@@ -1,12 +1,14 @@
 # Три контейнера и три сети:
 #
-#   bridge ──(llm)──▶ claude ──(egress)──▶ egress ──▶ api.anthropic.com
+#   bridge ──(llm)──▶ claude ──(egress)──▶ egress ──▶ Anthropic, веб (443)
 #      │
 #      └──(default)──▶ Telegram, Google, Yazio
 #
 # llm и egress — внутренние сети без выхода наружу. У claude нет ни .env
 # моста, ни тома с состоянием; наружу он ходит только через egress, а тот
-# пускает только к Anthropic. Подробно —
+# пускает на 443 к публичным адресам — не к соседним контейнерам и не на
+# хост. Веб у Claude есть только в запусках с едой; сводки Gmail и команды
+# календаря идут вовсе без инструментов. Подробно —
 # docs/superpowers/specs/2026-10-29-claude-cli-design.md.
 services:
   bridge:
@@ -63,7 +65,7 @@ services:
       target: egress
     image: tg-bridge-egress:local
     environment:
-      EGRESS_ALLOW: ${EGRESS_ALLOW:-api.anthropic.com:443,platform.claude.com:443}
+      EGRESS_ALLOW: ${EGRESS_ALLOW:-*:443}
     networks: [egress, default]
     read_only: true
     cap_drop: [ALL]

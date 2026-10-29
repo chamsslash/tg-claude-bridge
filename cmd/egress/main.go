@@ -13,9 +13,12 @@ import (
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// По умолчанию — любой публичный хост на 443: Claude с вебом читает
+	// страницы о еде. Только Anthropic — EGRESS_ALLOW=api.anthropic.com:443,
+	// platform.claude.com:443 (еда тогда без веба).
 	allow := os.Getenv("EGRESS_ALLOW")
 	if allow == "" {
-		allow = "api.anthropic.com:443,platform.claude.com:443"
+		allow = "*:443"
 	}
 	addr := os.Getenv("EGRESS_ADDR")
 	if addr == "" {

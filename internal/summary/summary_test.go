@@ -22,6 +22,11 @@ func claude(t *testing.T, code int, structured string, prompt *string) *llm.Clie
 		var req llm.Request
 		raw, _ := io.ReadAll(r.Body)
 		json.Unmarshal(raw, &req)
+		// Чужой текст — письма и приглашения — уходит Claude только без
+		// инструментов: веб есть у одной еды.
+		if req.Web {
+			t.Error("запрос с письмами ушёл с вебом")
+		}
 		if prompt != nil {
 			*prompt = req.Prompt
 		}

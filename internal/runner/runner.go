@@ -2,9 +2,12 @@
 // claude.
 //
 // Флаги запуска зашиты здесь, а не приходят с запросом: сервис передаёт
-// только системный промпт, промпт и схему ответа, и включить Claude
-// инструменты, MCP или чужие настройки он не может даже по ошибке. Claude
-// читает чужие письма, поэтому всё, что он может, — вернуть текст.
+// системный промпт, промпт, схему ответа и один переключатель — web. Без
+// него у Claude нет ни одного инструмента, и всё, что он может, — вернуть
+// текст: так идут сводки Gmail и команды календаря, где Claude читает чужие
+// письма и приглашения. С web у Claude только WebSearch и WebFetch — для
+// еды по фото, где на входе лишь фото и подпись владельца. Ни команд, ни
+// файлов, ни MCP нет ни в одном режиме.
 //
 // Промпт уходит в CLI одной строкой stream-json, а не простым текстом: только
 // так в запуск можно положить картинку (фото еды).
@@ -38,8 +41,16 @@ const maxImages = 4
 var mediaTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true}
 
 // maxTurns — без инструментов Claude отвечает за один ход; запас нужен
-// структурированному ответу, который CLI может перепросить.
-const maxTurns = "3"
+// структурированному ответу, который CLI может перепросить. С вебом каждый
+// поиск и каждая страница — ещё ход.
+const (
+	maxTurns    = "3"
+	maxWebTurns = "20"
+)
+
+// webTools — инструменты запуска с web: искать и читать страницы, больше
+// ничего.
+const webTools = "WebSearch,WebFetch"
 
 var (
 	ErrBadRequest = errors.New("пустой промпт, некорректная схема или картинка")
@@ -51,6 +62,9 @@ type Request struct {
 	Prompt string          `json:"prompt"`
 	Schema json.RawMessage `json:"schema,omitempty"`
 	Images []Image         `json:"images,omitempty"`
+	// Web — дать Claude поиск и чтение страниц. Только для запросов без
+	// чужого текста: письма и приглашения идут без него.
+	Web bool `json:"web,omitempty"`
 }
 
 // Image — картинка в base64, идёт в запуск перед текстом промпта.
@@ -79,21 +93,30 @@ func New(bin, model string, timeout time.Duration, parallel int) *Runner {
 
 // args — флаги запуска. Порядок групп: изоляция, вывод, промпт.
 func (r *Runner) args(req Request, mcpConfig string) []string {
+	tools, turns := "", maxTurns
+	if req.Web {
+		tools, turns = webTools, maxWebTurns
+	}
 	a := []string{
 		"-p",
-		// Без инструментов, исполняющих команды и код, без WebFetch и без
-		// пользовательских и проектных настроек.
+		// Без инструментов, исполняющих команды и код, без WebFetch (если
+		// --tools его не назвал) и без пользовательских и проектных настроек.
 		"--restricted",
-		// И без остальных встроенных инструментов: ни чтения файлов, ни поиска.
-		"--tools", "",
+		// Из встроенных инструментов — ничего или только веб: ни чтения
+		// файлов, ни записи.
+		"--tools", tools,
 		// MCP — только из пустого конфига: никаких серверов вообще.
 		"--strict-mcp-config", "--mcp-config", mcpConfig,
 		"--no-session-persistence",
-		"--max-turns", maxTurns,
+		"--max-turns", turns,
 		// stream-json на входе требует его и на выходе, а тот — --verbose.
 		"--input-format", "stream-json",
 		"--output-format", "stream-json", "--verbose",
 		"--system-prompt", req.System,
+	}
+	if req.Web {
+		// В -p спросить разрешение не у кого: веб разрешён заранее.
+		a = append(a, "--allowedTools", webTools)
 	}
 	if len(req.Schema) > 0 {
 		a = append(a, "--json-schema", string(req.Schema))

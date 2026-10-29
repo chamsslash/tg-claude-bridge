@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -90,5 +91,71 @@ func TestPlainHTTPRefused(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("GET через прокси: %d", resp.StatusCode)
+	}
+}
+
+func TestWildcardPort(t *testing.T) {
+	p := New("api.anthropic.com,*:443")
+	for host, want := range map[string]bool{
+		"api.anthropic.com:443": true,
+		"example.com:443":       true,
+		"example.com:80":        false,
+		"10.0.0.1:22":           false,
+	} {
+		if got := p.Allowed(host); got != want {
+			t.Errorf("%s: %v, want %v", host, got, want)
+		}
+	}
+}
+
+// Любой хост — только с публичными адресами, и соединение идёт на уже
+// проверенный адрес.
+func TestWildcardTarget(t *testing.T) {
+	p := New("*:443")
+	p.lookup = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		return map[string][]net.IPAddr{
+			"shop.example":     {{IP: net.ParseIP("93.184.216.34")}},
+			"inside.example":   {{IP: net.ParseIP("10.0.0.5")}},
+			"mixed.example":    {{IP: net.ParseIP("93.184.216.34")}, {IP: net.ParseIP("127.0.0.1")}},
+			"metadata.example": {{IP: net.ParseIP("169.254.169.254")}},
+			"cgnat.example":    {{IP: net.ParseIP("100.100.1.1")}},
+			"v6.example":       {{IP: net.ParseIP("fd00::1")}},
+		}[host], nil
+	}
+	for host, want := range map[string]string{
+		"shop.example:443":     "93.184.216.34:443",
+		"inside.example:443":   "",
+		"mixed.example:443":    "",
+		"metadata.example:443": "",
+		"cgnat.example:443":    "",
+		"v6.example:443":       "",
+		"127.0.0.1:443":        "",
+		"8.8.8.8:443":          "8.8.8.8:443",
+	} {
+		got, err := p.target(context.Background(), host)
+		if want == "" && err == nil {
+			t.Errorf("%s: пустил на %s", host, got)
+		}
+		if want != "" && got != want {
+			t.Errorf("%s: %q %v, want %q", host, got, err, want)
+		}
+	}
+}
+
+func TestWildcardRefusesPrivate(t *testing.T) {
+	p := New("*:443")
+	p.lookup = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("192.168.1.10")}}, nil
+	}
+	p.dial = func(string, string) (net.Conn, error) {
+		t.Fatal("дошёл до соединения")
+		return nil, nil
+	}
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+	code, c, _ := connect(t, srv.Listener.Addr().String(), "router.local:443")
+	c.Close()
+	if code != http.StatusForbidden {
+		t.Fatalf("CONNECT во внутреннюю сеть: %d, want 403", code)
 	}
 }

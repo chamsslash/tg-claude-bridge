@@ -2,7 +2,7 @@
 //
 // Claude здесь — функция «текст на входе, текст или JSON на выходе»: данные
 // собирает сервис, действия выполняет сервис. Что Claude может сделать сам,
-// решают флаги обёртки, а не этот клиент.
+// решают флаги обёртки; отсюда — только переключатель Web.
 package llm
 
 import (
@@ -29,6 +29,9 @@ type Request struct {
 	Prompt string          `json:"prompt"`
 	Schema json.RawMessage `json:"schema,omitempty"`
 	Images []Image         `json:"images,omitempty"`
+	// Web — поиск и чтение страниц в этом запуске. Только еда: в запросах с
+	// письмами и приглашениями его нет никогда.
+	Web bool `json:"web,omitempty"`
 }
 
 // Image — картинка для Claude: media_type («image/jpeg») и данные в base64.

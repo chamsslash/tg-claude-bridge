@@ -84,9 +84,28 @@ func TestIsolationFlags(t *testing.T) {
 	if strings.Contains(args, "--json-schema") {
 		t.Error("схемы не было — флага быть не должно")
 	}
+	if strings.Contains(args, "Web") || strings.Contains(args, "--allowedTools") {
+		t.Errorf("без web инструментов быть не должно:\n%s", args)
+	}
 	content := stdinMessage(t, f.read(t, "stdin"))
 	if len(content) != 1 || content[0]["type"] != "text" || content[0]["text"] != "письма" {
 		t.Errorf("промпт идёт через stdin текстом, а пришло %v", content)
+	}
+}
+
+// С web у Claude только поиск и чтение страниц, разрешённые заранее; остальная
+// изоляция та же.
+func TestWebFlags(t *testing.T) {
+	f := newFake(t, okOut)
+	if _, err := f.r.Run(context.Background(), Request{System: "сис", Prompt: "фото", Web: true}); err != nil {
+		t.Fatal(err)
+	}
+	args := f.read(t, "args")
+	for _, want := range []string{"[--restricted]", "[--tools]\n[WebSearch,WebFetch]\n",
+		"[--allowedTools]\n[WebSearch,WebFetch]\n", "[--strict-mcp-config]", "[--max-turns]\n[20]\n"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("нет %q в аргументах:\n%s", want, args)
+		}
 	}
 }
 

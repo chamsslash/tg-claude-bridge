@@ -63,6 +63,11 @@ func newFixture(t *testing.T) *fixture {
 		var req llm.Request
 		raw, _ := io.ReadAll(r.Body)
 		json.Unmarshal(raw, &req)
+		// Чужой текст — письма и приглашения — уходит Claude только без
+		// инструментов: веб есть у одной еды.
+		if req.Web {
+			t.Error("запрос календаря ушёл с вебом")
+		}
 		f.prompt = req.Prompt
 		if f.down {
 			w.WriteHeader(502)
