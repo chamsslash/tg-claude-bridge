@@ -84,6 +84,7 @@ func (m mealPresser) Photo(_ context.Context, img []byte, caption string) (strin
 	return "записал", telegram.Inline([][]telegram.Button{{{Text: "↩️ Отменить", Data: "meal:undo:k"}}})
 }
 func (m mealPresser) Counts(photo bool, text string) bool { return photo }
+func (m mealPresser) CountsPress(data string) bool        { return strings.HasPrefix(data, "meal:dish:") }
 func (m mealPresser) Start() (string, telegram.Markup) {
 	return "какой приём?", telegram.Inline([][]telegram.Button{{{Text: "Обед", Data: "meal:dt:lunch"}}})
 }
@@ -245,5 +246,14 @@ func TestMainKeyboardHasMealButton(t *testing.T) {
 	kb := Main()["keyboard"].([][]map[string]string)
 	if kb[0][0]["text"] != MealButton {
 		t.Fatalf("%v", kb)
+	}
+}
+
+// Блюдо из базы считает Claude — сначала «Считаю…».
+func TestDishPressAcks(t *testing.T) {
+	tg, svc, _ := run(t, telegram.Update{UpdateID: 1, Callback: &telegram.CallbackQuery{ID: "q", Data: "meal:dish:ab",
+		Message: &telegram.Message{Chat: telegram.Chat{ID: owner}}}})
+	if strings.Join(tg.sent, "|") != MealAck+"|еда: meal:dish:ab" || len(svc.pressed) != 1 {
+		t.Fatalf("%v", tg.sent)
 	}
 }

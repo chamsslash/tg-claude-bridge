@@ -4,7 +4,7 @@
 // Свободный текст — команда календаря (её разбирает Claude без
 // инструментов, выполняет сервис), а пока подсчёт калорий ждёт описания —
 // описание еды. Фото — еда для Yazio. Кнопки под ответами («Отменить»,
-// «Удалить») ловят те же сервисы, что их нарисовали.
+// «Удалить», блюдо из базы) ловят те же сервисы, что их нарисовали.
 package bot
 
 import (
@@ -66,12 +66,13 @@ type Calendar interface {
 }
 
 // Meals — еда по фото (meal.Meal): кнопка, фото, описание текстом, пока
-// сценарий его ждёт, и кнопки под ответами.
+// сценарий его ждёт, и кнопки под ответами (блюдо из базы — тоже кнопка).
 type Meals interface {
 	Start() (string, telegram.Markup)
 	Photo(ctx context.Context, img []byte, caption string) (string, telegram.Markup)
 	Text(ctx context.Context, text string) (string, telegram.Markup, bool)
 	Counts(photo bool, text string) bool
+	CountsPress(data string) bool
 	Presser
 }
 
@@ -232,6 +233,10 @@ func (b *Bot) press(ctx context.Context, cq *telegram.CallbackQuery) {
 		slog.Warn("не ответил на нажатие", "err", err)
 	}
 	slog.Info("кнопка", "data", cq.Data)
+	if b.meals.CountsPress(cq.Data) {
+		b.say(ctx, MealAck)
+		b.typing(ctx)
+	}
 	for _, p := range []Presser{b.cal, b.meals} {
 		if reply, mk, ok := p.Press(ctx, cq.Data); ok {
 			b.reply(ctx, reply, mk)

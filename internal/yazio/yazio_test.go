@@ -80,9 +80,12 @@ func newClient(t *testing.T, f *fakeYazio) *Client {
 func TestAddBody(t *testing.T) {
 	f := &fakeYazio{}
 	c := newClient(t, f)
-	e := Entry{ID: "id-1", Time: time.Date(2026, 10, 28, 13, 5, 9, 0, msk.Location), Daytime: Lunch,
-		Name: "Гречка с курицей", Kcal: 620, Protein: 38, Fat: 18.5, Carb: 72}
-	if err := c.Add(context.Background(), e); err != nil {
+	at := time.Date(2026, 10, 28, 13, 5, 9, 0, msk.Location)
+	es := []Entry{
+		{ID: "id-1", Time: at, Daytime: Lunch, Name: "Гречка с курицей", Kcal: 620, Protein: 38, Fat: 18.5, Carb: 72},
+		{ID: "id-2", Time: at, Daytime: Lunch, Name: "Компот", Kcal: 90, Protein: 0, Fat: 0, Carb: 22},
+	}
+	if err := c.Add(context.Background(), es); err != nil {
 		t.Fatal(err)
 	}
 	if f.reqs[0] != "POST /user/consumed-items t1" {
@@ -95,6 +98,10 @@ func TestAddBody(t *testing.T) {
 		"simple_products": []any{map[string]any{
 			"id": "id-1", "date": "2026-10-28 13:05:09", "daytime": "lunch", "name": "Гречка с курицей",
 			"nutrients":       map[string]any{"energy.energy": 620.0, "nutrient.protein": 38.0, "nutrient.fat": 18.5, "nutrient.carb": 72.0},
+			"is_ai_generated": false,
+		}, map[string]any{
+			"id": "id-2", "date": "2026-10-28 13:05:09", "daytime": "lunch", "name": "Компот",
+			"nutrients":       map[string]any{"energy.energy": 90.0, "nutrient.protein": 0.0, "nutrient.fat": 0.0, "nutrient.carb": 22.0},
 			"is_ai_generated": false,
 		}},
 	}
@@ -126,6 +133,38 @@ func TestDay(t *testing.T) {
 	}
 	if f.reqs[0] != "GET /user/consumed-items?date=2026-10-28 t1" {
 		t.Fatalf("%q", f.reqs[0])
+	}
+}
+
+// Ответ записан с живого API 29.10.2026 (числа изменены).
+const dailySummary = `{"activity_energy":150,"consume_activity_energy":true,"steps":0,"water_intake":0,
+"goals":{"energy.energy":2036.55,"water":2000,"activity.step":10000,"nutrient.protein":99.3439,"nutrient.fat":65.6952,"nutrient.carb":248.3598,"bodyvalue.weight":64},
+"meals":{"breakfast":{"energy_goal":610.9,"nutrients":{"energy.energy":0,"nutrient.carb":0,"nutrient.fat":0,"nutrient.protein":0}},
+"lunch":{"energy_goal":814.6,"nutrients":{"energy.energy":120,"nutrient.carb":10,"nutrient.fat":6,"nutrient.protein":6}},
+"dinner":{"energy_goal":509.1,"nutrients":{"energy.energy":895,"nutrient.carb":63.13,"nutrient.fat":51.61,"nutrient.protein":46.65}},
+"snack":{"energy_goal":101.8,"nutrients":{"energy.energy":0,"nutrient.carb":0,"nutrient.fat":0,"nutrient.protein":0}}}}`
+
+func TestSummary(t *testing.T) {
+	f := &fakeYazio{day: dailySummary}
+	c := newClient(t, f)
+	s, err := c.Summary(context.Background(), "2026-10-29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.reqs[0] != "GET /user/widgets/daily-summary?date=2026-10-29 t1" {
+		t.Fatalf("%q", f.reqs[0])
+	}
+	if s.Kcal != 1015 || s.KcalGoal != 2186.55 || s.Protein != 52.65 || s.ProteinGoal != 99.3439 ||
+		s.Fat != 57.61 || s.Carb != 73.13 || s.CarbGoal != 248.3598 {
+		t.Fatalf("%+v", s)
+	}
+	f.day = strings.Replace(dailySummary, `"consume_activity_energy":true`, `"consume_activity_energy":false`, 1)
+	if s, _ := c.Summary(context.Background(), "2026-10-29"); s.KcalGoal != 2036.55 {
+		t.Fatalf("без учёта активности цель %v", s.KcalGoal)
+	}
+	f.day = `{"goals":{},"meals":{}}`
+	if _, err := c.Summary(context.Background(), "2026-10-29"); err == nil {
+		t.Fatal("без цели остаток не посчитать")
 	}
 }
 

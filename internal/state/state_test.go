@@ -16,7 +16,7 @@ func TestOpenMissingFile(t *testing.T) {
 	if got.TelegramOffset != 0 || !got.Gmail.Since.IsZero() {
 		t.Fatalf("первый запуск должен начинаться с пустого состояния, получено %+v", got)
 	}
-	if got.Gmail.Seen == nil || got.Calendar.Actions == nil || got.Meal.Entries == nil {
+	if got.Gmail.Seen == nil || got.Calendar.Actions == nil || got.Meal.Entries == nil || got.Meal.Dishes == nil {
 		t.Fatal("карты не должны быть nil: иначе первая же запись в них паникует")
 	}
 }
@@ -30,7 +30,7 @@ func TestUpdatePersists(t *testing.T) {
 	at := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
 	if err := s.Update(func(st *State) {
 		st.TelegramOffset = 7
-		st.Meal.Entries["a"] = MealEntry{ID: "x", At: at}
+		st.Meal.Entries["a"] = MealEntry{IDs: []string{"x"}, At: at}
 	}); err != nil {
 		t.Fatal(err)
 	}

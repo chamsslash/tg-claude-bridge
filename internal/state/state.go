@@ -1,6 +1,6 @@
 // Package state хранит память моста между перезапусками в одном JSON-файле:
-// offset Telegram, что из Gmail уже ушло в сводку, и действия, которые ещё
-// можно отменить кнопкой.
+// offset Telegram, что из Gmail уже ушло в сводку, действия, которые ещё
+// можно отменить кнопкой, и личная база блюд.
 //
 // Объём — килобайты, поэтому база данных ради этого не нужна. Файл пишется
 // целиком и атомарно после каждого изменения.
@@ -57,18 +57,41 @@ type EventTime struct {
 	Date     string `json:"date,omitempty"`
 }
 
-// MealState — записи в Yazio, которые ещё можно отменить кнопкой.
+// MealState — приёмы пищи в Yazio, которые ещё можно отменить кнопкой, и
+// база блюд владельца.
 type MealState struct {
 	Entries map[string]MealEntry `json:"entries"`
+	Dishes  map[string]Dish      `json:"dishes"`
 }
 
-// MealEntry — одна запись: ID — id «быстрого ввода» в Yazio, Day — день
-// дневника (ГГГГ-ММ-ДД), по нему проверяется удаление.
+// MealEntry — один приём пищи: IDs — id записей «быстрого ввода» в Yazio
+// (по одной на блюдо), Day — день дневника (ГГГГ-ММ-ДД), по нему
+// проверяется удаление. NewDishes — блюда, которые этот приём добавил в
+// базу: отмена убирает и их.
 type MealEntry struct {
-	ID   string    `json:"id"`
-	Day  string    `json:"day"`
-	Name string    `json:"name"`
-	At   time.Time `json:"at"`
+	IDs       []string  `json:"ids"`
+	Day       string    `json:"day"`
+	Name      string    `json:"name"`
+	NewDishes []string  `json:"new_dishes,omitempty"`
+	At        time.Time `json:"at"`
+}
+
+// Dish — блюдо из базы владельца: состав и КБЖУ последней порции.
+type Dish struct {
+	Name  string     `json:"name"`
+	Items []DishItem `json:"items"`
+	Uses  int        `json:"uses"`
+	Last  time.Time  `json:"last"`
+}
+
+// DishItem — компонент блюда: КБЖУ — на вес Grams, а не на 100 г.
+type DishItem struct {
+	Name    string  `json:"name"`
+	Grams   float64 `json:"grams"`
+	Kcal    float64 `json:"kcal"`
+	Protein float64 `json:"protein"`
+	Fat     float64 `json:"fat"`
+	Carb    float64 `json:"carb"`
 }
 
 type Store struct {
@@ -148,11 +171,15 @@ func (st *State) normalize() {
 	if st.Meal.Entries == nil {
 		st.Meal.Entries = map[string]MealEntry{}
 	}
+	if st.Meal.Dishes == nil {
+		st.Meal.Dishes = map[string]Dish{}
+	}
 }
 
 func (st State) clone() State {
 	st.Gmail.Seen = maps.Clone(st.Gmail.Seen)
 	st.Calendar.Actions = maps.Clone(st.Calendar.Actions)
 	st.Meal.Entries = maps.Clone(st.Meal.Entries)
+	st.Meal.Dishes = maps.Clone(st.Meal.Dishes)
 	return st
 }

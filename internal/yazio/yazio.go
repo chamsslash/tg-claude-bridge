@@ -3,7 +3,7 @@
 // Публичного API у Yazio нет: это тот же закрытый API v22, в который ходит
 // приложение (справочник — github.com/yazio-community/yazio-api-specification).
 // Мост пишет в дневник только «быстрый ввод» (simple_product): название и
-// КБЖУ порции, без поиска продуктов в базе.
+// КБЖУ порции, без поиска продуктов в базе; читает итог дня с целями.
 package yazio
 
 import (
@@ -84,9 +84,19 @@ func New(user, pass, ua string, timeout time.Duration) *Client {
 // Enabled — Yazio настроен.
 func (c *Client) Enabled() bool { return c != nil && c.user != "" && c.pass != "" }
 
-// Add пишет запись в дневник.
-func (c *Client) Add(ctx context.Context, e Entry) error {
-	item := map[string]any{
+// Add пишет записи в дневник одним запросом: блюдо и напиток с одного фото
+// появляются вместе или не появляются вовсе.
+func (c *Client) Add(ctx context.Context, es []Entry) error {
+	items := make([]any, 0, len(es))
+	for _, e := range es {
+		items = append(items, simpleProduct(e))
+	}
+	body := map[string]any{"products": []any{}, "recipe_portions": []any{}, "simple_products": items}
+	return c.do(ctx, http.MethodPost, "/user/consumed-items", body, nil)
+}
+
+func simpleProduct(e Entry) map[string]any {
+	return map[string]any{
 		"id":      e.ID,
 		"date":    e.Time.In(msk.Location).Format("2006-01-02 15:04:05"),
 		"daytime": e.Daytime,
@@ -100,8 +110,6 @@ func (c *Client) Add(ctx context.Context, e Entry) error {
 		// Так отправляет и приложение; как Yazio покажет true, не проверено.
 		"is_ai_generated": false,
 	}
-	body := map[string]any{"products": []any{}, "recipe_portions": []any{}, "simple_products": []any{item}}
-	return c.do(ctx, http.MethodPost, "/user/consumed-items", body, nil)
 }
 
 // Delete удаляет запись. Yazio отвечает успехом и тогда, когда удалять было
@@ -126,6 +134,48 @@ func (c *Client) Day(ctx context.Context, day string) ([]string, error) {
 		ids = append(ids, s.ID)
 	}
 	return ids, nil
+}
+
+// Summary — итог дня, как на главном экране приложения: съедено и цели.
+type Summary struct {
+	Kcal, Protein, Fat, Carb                 float64
+	KcalGoal, ProteinGoal, FatGoal, CarbGoal float64
+}
+
+// Summary — итог дня (ГГГГ-ММ-ДД). Сожжённое на тренировках прибавляется к
+// цели по калориям, если так настроено в приложении: остаток тогда тот же,
+// что видит владелец.
+func (c *Client) Summary(ctx context.Context, day string) (Summary, error) {
+	var out struct {
+		ActivityEnergy        float64            `json:"activity_energy"`
+		ConsumeActivityEnergy bool               `json:"consume_activity_energy"`
+		Goals                 map[string]float64 `json:"goals"`
+		Meals                 map[string]struct {
+			Nutrients map[string]float64 `json:"nutrients"`
+		} `json:"meals"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/user/widgets/daily-summary?date="+url.QueryEscape(day), nil, &out); err != nil {
+		return Summary{}, err
+	}
+	s := Summary{
+		KcalGoal:    out.Goals["energy.energy"],
+		ProteinGoal: out.Goals["nutrient.protein"],
+		FatGoal:     out.Goals["nutrient.fat"],
+		CarbGoal:    out.Goals["nutrient.carb"],
+	}
+	if out.ConsumeActivityEnergy {
+		s.KcalGoal += out.ActivityEnergy
+	}
+	for _, m := range out.Meals {
+		s.Kcal += m.Nutrients["energy.energy"]
+		s.Protein += m.Nutrients["nutrient.protein"]
+		s.Fat += m.Nutrients["nutrient.fat"]
+		s.Carb += m.Nutrients["nutrient.carb"]
+	}
+	if s.KcalGoal <= 0 {
+		return Summary{}, errors.New("Yazio: в итоге дня нет цели по калориям")
+	}
+	return s, nil
 }
 
 // NewID — UUID v4 для новой записи: id генерирует клиент.
